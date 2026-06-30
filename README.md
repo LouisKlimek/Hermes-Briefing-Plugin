@@ -104,7 +104,7 @@ Final layout (the standard Hermes plugin contract — a `dashboard/` subfolder):
 └── dashboard/
     ├── manifest.json
     ├── plugin_api.py          # backend routes (FastAPI) + standalone CLI
-    ├── reports/               # aggregation, escalation, summarizer, renderers
+    ├── briefing_core/        # aggregation, escalation, summarizer, renderers
     ├── send_report.py         # build + email today's briefing
     ├── dist/index.js          # the Briefing tab (React, via the Plugin SDK)
     ├── config.example.yaml
@@ -225,6 +225,25 @@ Like all Hermes plugin routes, these bypass session auth because the dashboard b
 - Saved filters / per-tenant briefings.
 
 Contributions welcome — please include your `hermes --version` and, for UI issues, a screenshot plus browser console output.
+
+---
+
+## Troubleshooting
+
+**The Briefing tab shows but every request 404s** (`No such API endpoint: /api/plugins/briefing/status`). The tab (frontend) is picked up by a plugin *rescan*, but **backend API routes mount only when `hermes dashboard` starts** — a `rescan` is not enough. Fully restart the dashboard:
+
+```bash
+# stop the running dashboard, then:
+hermes dashboard
+```
+
+Then hard-refresh the browser (Ctrl/Cmd+Shift+R). If it still 404s:
+
+1. Confirm the file exists at `~/.hermes/plugins/briefing/dashboard/plugin_api.py` and the manifest has `"api": "plugin_api.py"`.
+2. Open `/api/plugins/briefing/health` in the browser. If the plugin loaded but a dependency failed, it returns the **Python traceback** here (instead of a 404) — copy that into an issue.
+3. Tail `~/.hermes/logs/errors.log` for `Failed to load plugin briefing API routes`.
+
+**The tab is empty / no briefings.** It builds today on first open via GET. If that 404s, it's the mount problem above. Once routes are mounted, opening the tab (or `python plugin_api.py render`) builds on demand.
 
 ---
 

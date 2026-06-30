@@ -1,7 +1,7 @@
-"""Hermes Reports — backend routes + CLI.
+"""Hermes Briefing — backend routes + CLI.
 
 The dashboard loader imports this file and looks for a module-level
-`router = APIRouter()`. Routes mount under /api/plugins/reports/.
+`router = APIRouter()`. Routes mount under /api/plugins/briefing/.
 
 It also runs standalone so you can get the Markdown report with zero dashboard
 wiring:
@@ -15,29 +15,48 @@ from __future__ import annotations
 
 import os
 import sys
+import traceback
 
-# make the sibling `reports` package importable however the loader pulls us in
+# make the sibling package importable however the loader pulls us in
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from reports.config import load_config                       # noqa: E402
-from reports.aggregate import (                              # noqa: E402
-    build_digest, build_range, build_recent, next_run, today_str,
-)
-from reports.render_md import render_day, render_range       # noqa: E402
-from reports.store import Store                               # noqa: E402
-from reports.kanban_source import KanbanSource               # noqa: E402
 
 try:
     from fastapi import APIRouter, Body, HTTPException
-    from fastapi.responses import PlainTextResponse
+    from fastapi.responses import PlainTextResponse, JSONResponse
     router = APIRouter()
 except Exception:  # CLI-only environment without fastapi
     router = None
 
+# Import deps inside try so this module ALWAYS imports and exports `router`.
+# If deps fail, the router still mounts and reports the traceback instead of the
+# dashboard returning an undebuggable generic 404.
+_IMPORT_ERROR = None
+try:
+    from briefing_core.config import load_config
+    from briefing_core.aggregate import (
+        build_digest, build_range, build_recent, next_run, today_str,
+    )
+    from briefing_core.render_md import render_day, render_range
+    from briefing_core.store import Store
+    from briefing_core.kanban_source import KanbanSource
+except Exception:
+    _IMPORT_ERROR = traceback.format_exc()
+
 
 # ---------------------------------------------------------------- routes
 
-if router is not None:
+if router is not None and _IMPORT_ERROR:
+    # deps failed to import — mount a router that explains why, so the browser
+    # shows the traceback instead of a generic "No such API endpoint" 404.
+    @router.get("/health")
+    def health_err():
+        return JSONResponse(status_code=500, content={"ok": False, "error": _IMPORT_ERROR})
+
+    @router.api_route("/{path:path}", methods=["GET", "POST"])
+    def diag(path: str):
+        return JSONResponse(status_code=500, content={"plugin_error": _IMPORT_ERROR})
+
+elif router is not None:
 
     @router.get("/health")
     def health():
@@ -151,6 +170,9 @@ if router is not None:
 # ------------------------------------------------------------------ CLI
 
 def _cli(argv: list[str]) -> int:
+    if _IMPORT_ERROR:
+        sys.stderr.write("Failed to import plugin deps:\n" + _IMPORT_ERROR + "\n")
+        return 1
     cfg = load_config()
     cmd = argv[0] if argv else "render"
 
