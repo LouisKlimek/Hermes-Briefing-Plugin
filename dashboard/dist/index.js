@@ -231,6 +231,86 @@
       }));
   }
 
+  function kpiTile(label, val, color) {
+    return h("div", { style: { minWidth: "4.6rem", padding: "0.4rem 0.6rem", border: "1px solid var(--color-border)", borderRadius: "0.5rem", background: "var(--color-card)" } },
+      h("div", { style: { fontSize: "1.15rem", fontWeight: 700, color: color || "inherit", lineHeight: 1.1 } }, val),
+      h("div", { style: { fontSize: "0.62rem", textTransform: "uppercase", letterSpacing: "0.05em", color: MUTED } }, label));
+  }
+  function lightColor(light) { return light === "blocked" ? resolveColor("blocked", "blocked") : light === "waiting" ? resolveColor("todo", "todo") : resolveColor("done", "done"); }
+  function lightWord(light) { return light === "blocked" ? "blocked" : light === "waiting" ? "waiting" : "on track"; }
+
+  function Overview(props) {
+    var ov = props.overview || {}, vf = props.verification || {};
+    var k = ov.kpis || {}, ct = ov.counters || {}, ti = ov.team_input || {};
+    var vcolor = (vf.red > 0) ? "#ef4444" : "#22c55e";
+    return h("div", { style: { marginBottom: "0.85rem", paddingBottom: "0.75rem", borderBottom: "1px solid var(--color-border)" } },
+      h("div", { style: { fontSize: "0.74rem", color: MUTED, marginBottom: "0.55rem" } },
+        props.date + (ov.phase ? " \u00b7 Phase " + ov.phase : "") + " \u00b7 " + (ov.mode || "day") + " \u00b7 " + (ov.board === "all" ? "All boards" : ov.board)),
+      (ov.board_lights && ov.board_lights.length) ? h("div", { style: { display: "flex", flexWrap: "wrap", gap: "0.4rem", marginBottom: "0.6rem" } },
+        ov.board_lights.map(function (b, i) {
+          var c = lightColor(b.light);
+          return h("span", { key: i, style: { display: "inline-flex", alignItems: "center", gap: "0.35rem", fontSize: "0.76rem", padding: "0.16rem 0.55rem", borderRadius: "999px", border: "1px solid var(--color-border)", background: "var(--color-card)" } },
+            h("span", { style: { width: "8px", height: "8px", borderRadius: "999px", background: c, boxShadow: "0 0 6px " + c + "88" } }),
+            b.board, h("span", { style: { color: MUTED } }, lightWord(b.light)));
+        })) : null,
+      h("div", { style: { display: "flex", flexWrap: "wrap", gap: "0.5rem", marginBottom: "0.55rem" } },
+        kpiTile("Done", k.done || 0, "#22c55e"),
+        kpiTile("New", k.new || 0, null),
+        kpiTile("Blocked", k.blocked || 0, k.blocked ? "#ef4444" : null),
+        kpiTile("Profiles", k.active_profiles || 0, null),
+        kpiTile("Lessons", ct.lessons || 0, null),
+        kpiTile("Skill/SOUL", ct.skill_soul || 0, null)),
+      h("div", { style: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: "0.9rem" } },
+        h("span", { style: { display: "inline-flex", alignItems: "center", gap: "0.4rem", fontSize: "0.82rem", fontWeight: 600 } },
+          h("span", { style: { width: "9px", height: "9px", borderRadius: "999px", background: vcolor } }),
+          "System " + (vf.green || 0) + "/" + (vf.total || 12) + " green" + (vf.red ? " \u00b7 " + vf.red + " red" : "") + (vf.na ? " \u00b7 " + vf.na + " n/a" : "")),
+        (ti.new || ti.unrouted) ? h("span", { style: { fontSize: "0.78rem", color: MUTED } }, "Team: " + (ti.new || 0) + " new" + (ti.unrouted ? " \u00b7 " + ti.unrouted + " unrouted" : "")) : null));
+  }
+
+  function VerificationList(props) {
+    var vf = props.verification || {}, checks = vf.checks || [];
+    var dot = { green: "#22c55e", red: "#ef4444", na: "#6b7280" };
+    return h("div", null, checks.map(function (c, i) {
+      return h("div", { key: i, style: { display: "flex", alignItems: "center", gap: "0.5rem", padding: "0.25rem 0", fontSize: "0.8rem" } },
+        h("span", { style: { width: "8px", height: "8px", borderRadius: "999px", background: dot[c.status] || "#6b7280", flex: "0 0 auto" } }),
+        h("span", { style: { fontWeight: 600, minWidth: "11rem" } }, c.label),
+        h("span", { style: { color: MUTED } }, c.status === "na" ? "n/a \u2014 " + (c.detail || "") : (c.status + " \u00b7 " + (c.detail || ""))));
+    }));
+  }
+
+  function fmtDur(s) { if (s == null) return "\u2014"; return s >= 60 ? (s / 60).toFixed(1) + " min" : Math.round(s) + " s"; }
+  function fmtTok(n) { if (!n) return "\u2014"; return n >= 1000 ? (n / 1000).toFixed(1) + "k" : "" + n; }
+  function ModelsTable(props) {
+    var m = props.models || {}, rows = m.by_profile || [], av = m.available || {};
+    if (!rows.length) return h("div", { style: { fontSize: "0.82rem", color: MUTED } }, "No run/timing data found for this range.");
+    var headers = [["Profile", "left"], ["Model", "left"], ["Runs", "right"]];
+    if (av.latency) headers.push(["\u00d8 Latency", "right"]);
+    if (av.tokens) headers.push(["Tokens", "right"]);
+    if (av.thinking) headers.push(["Thinking", "right"]);
+    if (av.cost) headers.push(["Cost", "right"]);
+    var thStyle = { padding: "0.4rem 0.6rem", fontSize: "0.64rem", textTransform: "uppercase", letterSpacing: "0.05em", color: MUTED, fontWeight: 700, borderBottom: "1px solid var(--color-border)" };
+    var tdStyle = { padding: "0.4rem 0.6rem", fontSize: "0.82rem", borderBottom: "1px solid var(--color-border)", verticalAlign: "top" };
+    return h("div", { style: { overflowX: "auto" } },
+      h("table", { style: { borderCollapse: "collapse", width: "100%", minWidth: "460px" } },
+        h("thead", null, h("tr", null, headers.map(function (hd, i) {
+          return h("th", { key: i, style: Object.assign({}, thStyle, { textAlign: hd[1] }) }, hd[0]); }))),
+        h("tbody", null, rows.map(function (r, i) {
+          var avg = r.dur_n ? r.dur_sum / r.dur_n : null;
+          var thinkVal = (r.thinking != null && r.thinking !== "") ? String(r.thinking)
+            : (r.thinking_runs ? r.thinking_runs + "/" + r.runs : "\u2014");
+          var cells = [
+            h("td", { key: "p", style: Object.assign({}, tdStyle, { fontWeight: 600 }) }, r.profile),
+            h("td", { key: "m", style: tdStyle }, r.model || "\u2014"),
+            h("td", { key: "r", style: Object.assign({}, tdStyle, { textAlign: "right" }) }, r.runs)
+          ];
+          if (av.latency) cells.push(h("td", { key: "l", style: Object.assign({}, tdStyle, { textAlign: "right" }) }, fmtDur(avg)));
+          if (av.tokens) cells.push(h("td", { key: "t", style: Object.assign({}, tdStyle, { textAlign: "right" }) }, fmtTok(r.in_tok + r.out_tok)));
+          if (av.thinking) cells.push(h("td", { key: "th", style: Object.assign({}, tdStyle, { textAlign: "right" }) }, thinkVal));
+          if (av.cost) cells.push(h("td", { key: "c", style: Object.assign({}, tdStyle, { textAlign: "right" }) }, "$" + (r.cost || 0).toFixed(2)));
+          return h("tr", { key: i }, cells);
+        }))));
+  }
+
   function boardOf(taskId) { var i = (taskId || "").indexOf("::"); return i >= 0 ? taskId.slice(0, i) : ""; }
 
   function BudgetBar(props) {
@@ -286,6 +366,8 @@
           building ? h("span", null, h(Spinner, { style: { marginRight: "0.35rem" } }), "Building\u2026") : "Rebuild") : null,
         digest.generated_at ? h("span", { style: { fontSize: "0.72rem", color: MUTED } }, "built " + timeAgo(digest.generated_at)) : null),
 
+      digest.overview ? h(Overview, { overview: digest.overview, verification: digest.verification, date: digest.date }) : null,
+
       (digest.hand && digest.hand.length)
         ? h(Section, { title: "Needs your call" }, digest.hand.map(function (d) { return h(HandItem, { key: d.id, d: d, target: props.target }); }))
         : h(Section, { title: "Needs your call" }, h("div", { style: { fontSize: "0.82rem", color: MUTED } }, "Nothing open.")),
@@ -305,6 +387,12 @@
         : null,
       (digest.learned && digest.learned.length)
         ? h(Section, { title: "Insights (" + digest.learned.length + ")" }, h(LearnedCards, { items: digest.learned, target: props.target }))
+        : null,
+      (digest.models && digest.models.total_runs)
+        ? h(Section, { title: "Models \u00b7 " + (digest.models.by_profile.length) + " profiles" }, h(ModelsTable, { models: digest.models }))
+        : null,
+      (digest.verification && digest.verification.checks)
+        ? h(Section, { title: "Verification \u00b7 " + (digest.verification.green || 0) + "/" + (digest.verification.total || 12) + " green", defaultCollapsed: true }, h(VerificationList, { verification: digest.verification }))
         : null,
       h(Section, { title: "Cost" },
         h(BudgetBar, { label: "Today", used: cost.today_eur, budget: cost.budget_daily }),
@@ -341,6 +429,7 @@
               h("a", { href: t.url, style: { display: "inline-block", marginTop: "0.4rem", fontSize: "0.76rem", fontWeight: 600, textDecoration: "none", color: "inherit", border: "1px solid var(--color-border)", borderRadius: "0.4rem", padding: "0.12rem 0.5rem" } }, "Open ticket \u2192")); }))) : null,
       (r.done && r.done.length) ? h(Section, { title: "Done (" + r.done.length + ")" }, h(DoneGrid, { items: r.done, target: props.target }))
         : h(Section, { title: "Done" }, h("div", { style: { fontSize: "0.82rem", color: MUTED } }, "Nothing recorded in this range.")),
+      (r.models && r.models.total_runs) ? h(Section, { title: "Models \u00b7 " + (r.models.by_profile.length) + " profiles" }, h(ModelsTable, { models: r.models })) : null,
       (r.learned && r.learned.length) ? h(Section, { title: "Insights (" + r.learned.length + ")" }, h(LearnedCards, { items: r.learned, target: props.target })) : null);
     function stat(label, val) {
       return h("div", null,

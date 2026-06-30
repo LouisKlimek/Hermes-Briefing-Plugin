@@ -281,6 +281,8 @@ _CANDIDATES: dict[str, list[str]] = {
     "task_priority":["priority", "prio"],
     "task_created": ["created_at", "ts", "created", "time"],
     "task_body":    ["body", "description", "desc"],
+    "task_created_by": ["created_by", "creator", "author", "by", "created_by_user"],
+    "task_workspace": ["workspace", "workspace_path", "scratch", "repo", "worktree"],
 
     "run_id":       ["id", "run_id"],
     "run_task":     ["task_id", "task"],
@@ -290,9 +292,12 @@ _CANDIDATES: dict[str, list[str]] = {
     "run_error":    ["error", "err", "message"],
     "run_started":  ["started_at", "created_at", "start", "started"],
     "run_ended":    ["ended_at", "finished_at", "end", "ended"],
+    "run_duration": ["duration", "duration_s", "duration_ms", "elapsed", "elapsed_ms", "latency_ms", "took_ms"],
     "run_in_tok":   ["input_tokens", "prompt_tokens", "tokens_in", "in_tokens"],
     "run_out_tok":  ["output_tokens", "completion_tokens", "tokens_out", "out_tokens"],
     "run_cost":     ["cost", "cost_eur", "cost_usd", "price"],
+    "run_model":    ["model", "model_name", "llm", "llm_model", "engine", "model_id"],
+    "run_thinking": ["thinking", "thinking_mode", "reasoning", "reasoning_effort", "extended_thinking"],
 }
 
 
@@ -315,6 +320,9 @@ class Task:
     tenant: str
     priority: Any
     created: int
+    body: str = ""
+    created_by: str = ""
+    workspace: str = ""
 
 
 # --------------------------------------------------------------------------- #
@@ -464,6 +472,198 @@ def _scan_files_for_colors(paths, out: dict) -> None:
             continue
 
 
+_HEADER_ALIASES = {
+    "department": ("department", "dept", "abteilung"),
+    "capability": ("capability", "cap"),
+    "service": ("service",),
+    "output": ("output",),
+    "depends_on": ("depends_on", "depends-on", "depends", "dependson"),
+}
+
+
+def parse_body_header(body: Any) -> dict:
+    """Parse the WFDE task body-header convention (Department/Capability/Service/
+    Output/Depends-on). Returns parsed fields + header_present flag."""
+    res = {"department": None, "capability": None, "service": None,
+           "output": None, "depends_on": [], "header_present": False}
+    if not body:
+        return res
+    for line in str(body).splitlines()[:25]:
+        if ":" not in line:
+            continue
+        key, _, val = line.partition(":")
+        k = _canon(key)
+        v = val.strip()
+        for field, aliases in _HEADER_ALIASES.items():
+            if k in tuple(_canon(a) for a in aliases):
+                res["header_present"] = True
+                if field == "depends_on":
+                    res[field] = [x.strip() for x in re.split(r"[,\s]+", v)
+                                  if x.strip() and x.strip().lower() != "none"]
+                else:
+                    res[field] = None if v.lower() in ("none", "-", "") else v
+    return res
+
+
+def extract_markers(text: Any) -> set:
+    """Find WFDE gate/approval markers in body or comment text."""
+    t = str(text or "").upper()
+    m = set()
+    if re.search(r"QS-?A", t): m.add("QS-A")
+    if re.search(r"QS-?B", t): m.add("QS-B")
+    if re.search(r"QS-?C", t): m.add("QS-C")
+    if "BOSS-GATE" in t or "BOSS GATE" in t or "BOSS-FREIGABE" in t: m.add("BOSS-GATE")
+    if "CEO-VERIFIED" in t or "CEO VERIFIED" in t or "CEO-VERIFIZIERT" in t: m.add("CEO-VERIFIED")
+    if "APPROVAL-PENDING" in t or "APPROVAL PENDING" in t or "NEEDS APPROVAL" in t or "PRODUKTIVFREIGABE" in t: m.add("APPROVAL-PENDING")
+    if "BLOCKED" in t: m.add("BLOCKED")
+    return m
+
+
+_GATE_MARKERS = {"QS-A", "QS-B", "QS-C", "BOSS-GATE", "CEO-VERIFIED"}
+
+
+def profile_meta(cfg: Config) -> dict:
+    """Map profile name -> {model, thinking} by scanning profile config files
+    under <hermes_home>/profiles/<name>/. Best-effort and schema-agnostic."""
+    out: dict = {}
+    try:
+        import yaml
+    except Exception:
+        yaml = None
+    base = cfg.hermes_home / "profiles"
+    if not base.is_dir():
+        return out
+
+    def find(d: dict, keys):
+        for k in keys:
+            for kk in d:
+                if kk.lower() == k:
+                    v = d[kk]
+                    if isinstance(v, (str, int, float, bool)):
+                        return str(v)
+        for v in d.values():
+            if isinstance(v, dict):
+                r = find(v, keys)
+                if r:
+                    return r
+        return None
+
+    for pdir in base.iterdir():
+        if not pdir.is_dir():
+            continue
+        meta = {}
+        for fp in list(pdir.glob("*.json")) + list(pdir.glob("*.yaml")) + list(pdir.glob("*.yml")):
+            try:
+                if fp.stat().st_size > 2_000_000:
+                    continue
+                text = fp.read_text(encoding="utf-8", errors="ignore")
+                obj = None
+                try:
+                    obj = json.loads(text)
+                except Exception:
+                    obj = yaml.safe_load(text) if yaml else None
+                if isinstance(obj, dict):
+                    meta.setdefault("model", find(obj, ("model", "model_name", "llm", "llm_model", "engine")))
+                    meta.setdefault("thinking", find(obj, ("thinking", "thinking_mode", "reasoning", "reasoning_effort", "extended_thinking")))
+                    if "departments" not in meta:
+                        meta["departments"] = _find_list(obj, ("allowed_departments", "departments", "department", "lanes", "lane"))
+                    if "capabilities" not in meta:
+                        meta["capabilities"] = _find_list(obj, ("allowed_capabilities", "capabilities", "capability", "caps"))
+            except Exception:
+                continue
+        out[_canon(pdir.name)] = {"model": meta.get("model"), "thinking": meta.get("thinking"),
+                                  "departments": meta.get("departments") or [],
+                                  "capabilities": meta.get("capabilities") or []}
+    return out
+
+
+def _find_list(d: dict, keys) -> list:
+    keys = tuple(k.lower() for k in keys)
+    for k, v in d.items():
+        if k.lower() in keys:
+            if isinstance(v, list):
+                return [str(x) for x in v]
+            if isinstance(v, str):
+                return [s.strip() for s in re.split(r"[,;]+", v) if s.strip()]
+    for v in d.values():
+        if isinstance(v, dict):
+            r = _find_list(v, keys)
+            if r:
+                return r
+    return []
+
+
+def build_models(runs: list[dict], pmeta: dict | None = None) -> dict:
+    """Aggregate normalized runs into per-profile and per-model usage stats.
+    Returns raw sums so週/Monat roll-ups can merge cheaply; the UI finalizes
+    averages. Fills model/thinking from profile config when runs omit them."""
+    pmeta = pmeta or {}
+
+    def blank():
+        return {"runs": 0, "in_tok": 0, "out_tok": 0, "cost": 0.0,
+                "dur_sum": 0.0, "dur_n": 0, "thinking_runs": 0}
+
+    by_profile: dict = {}
+    by_model: dict = {}
+    have = {"model": False, "tokens": False, "latency": False, "thinking": False, "cost": False}
+
+    for r in runs:
+        prof = r.get("profile") or "unknown"
+        pm = pmeta.get(_canon(prof), {})
+        model = r.get("model") or pm.get("model")
+        thinking = r.get("thinking")
+        if thinking in (None, "") and pm.get("thinking") is not None:
+            thinking = pm.get("thinking")
+        if model:
+            have["model"] = True
+        if r.get("in_tok") or r.get("out_tok"):
+            have["tokens"] = True
+        if r.get("cost"):
+            have["cost"] = True
+        if r.get("dur_s") is not None:
+            have["latency"] = True
+        thinky = _is_thinking_on(thinking)
+        if thinky:
+            have["thinking"] = True
+
+        for bucket, key, extra in ((by_profile, prof, {"model": model, "thinking": thinking}),
+                                   (by_model, model or "unknown", None)):
+            ent = bucket.setdefault(key, blank())
+            ent["runs"] += 1
+            ent["in_tok"] += int(r.get("in_tok") or 0)
+            ent["out_tok"] += int(r.get("out_tok") or 0)
+            ent["cost"] += float(r.get("cost") or 0.0)
+            if r.get("dur_s") is not None:
+                ent["dur_sum"] += float(r["dur_s"]); ent["dur_n"] += 1
+            if thinky:
+                ent["thinking_runs"] += 1
+            if extra:
+                if extra.get("model"):
+                    ent["model"] = extra["model"]
+                if extra.get("thinking") not in (None, ""):
+                    ent["thinking"] = extra["thinking"]
+
+    def listify(bucket, name_key):
+        rows = []
+        for k, v in bucket.items():
+            row = {name_key: k}
+            row.update(v)
+            rows.append(row)
+        rows.sort(key=lambda x: x["runs"], reverse=True)
+        return rows
+
+    return {"by_profile": listify(by_profile, "profile"),
+            "by_model": listify(by_model, "model"),
+            "available": have, "total_runs": len(runs)}
+
+
+def _is_thinking_on(v: Any) -> bool:
+    if v in (None, "", 0, False):
+        return False
+    s = str(v).strip().lower()
+    return s not in ("0", "false", "off", "no", "none", "disabled", "low_none")
+
+
 def _to_epoch(v: Any) -> int:
     if v is None:
         return 0
@@ -568,15 +768,16 @@ class _BoardSource:
         self._cols["tasks"] = {
             logical: self._pick(logical, tk, ov.get(logical))
             for logical in ("task_id", "task_title", "task_status", "task_assignee",
-                            "task_tenant", "task_priority", "task_created", "task_body")
+                            "task_tenant", "task_priority", "task_created", "task_body",
+                            "task_created_by", "task_workspace")
         }
         if self._runs_table:
             rn = self._table_cols(self._runs_table)
             self._cols["runs"] = {
                 logical: self._pick(logical, rn, ov.get(logical))
                 for logical in ("run_id", "run_task", "run_outcome", "run_profile", "run_summary",
-                                "run_error", "run_started", "run_ended", "run_in_tok",
-                                "run_out_tok", "run_cost")
+                                "run_error", "run_started", "run_ended", "run_duration", "run_in_tok",
+                                "run_out_tok", "run_cost", "run_model", "run_thinking")
             }
 
     def inspect_schema(self) -> dict:
@@ -634,6 +835,16 @@ class _BoardSource:
                              data=payload, ts=ets, run_id=r["_run"]))
         return out
 
+    def _col_is_text(self, table: str, col: str) -> bool:
+        # NOTE: query the OWNING table — SQLite returns a quoted unknown column
+        # name as a string literal, which would otherwise misclassify the type.
+        try:
+            row = self._conn.execute(
+                f'SELECT "{col}" FROM {table} WHERE "{col}" IS NOT NULL LIMIT 1').fetchone()
+            return bool(row) and isinstance(row[0], str) and not str(row[0]).isdigit()
+        except Exception:
+            return False
+
     def _ts_is_text(self, col: str) -> bool:
         try:
             row = self._conn.execute(
@@ -656,6 +867,9 @@ class _BoardSource:
         cols.append(f'"{c["task_tenant"]}" AS _ten' if c["task_tenant"] else "'' AS _ten")
         cols.append(f'"{c["task_priority"]}" AS _prio' if c["task_priority"] else "NULL AS _prio")
         cols.append(f'"{c["task_created"]}" AS _cr' if c["task_created"] else "NULL AS _cr")
+        cols.append(f'"{c["task_body"]}" AS _body' if c.get("task_body") else "'' AS _body")
+        cols.append(f'"{c["task_created_by"]}" AS _cby' if c.get("task_created_by") else "'' AS _cby")
+        cols.append(f'"{c["task_workspace"]}" AS _ws' if c.get("task_workspace") else "'' AS _ws")
         q = f'SELECT {", ".join(cols)} FROM {self._tasks_table}'
         rows = self._conn.execute(q).fetchall()
         out: dict[str, Task] = {}
@@ -667,7 +881,8 @@ class _BoardSource:
                 continue
             out[_id] = Task(id=_id, title=r["_title"] or "", status=(r["_status"] or "").lower(),
                             assignee=r["_asg"] or "", tenant=r["_ten"] or "",
-                            priority=r["_prio"], created=_to_epoch(r["_cr"]))
+                            priority=r["_prio"], created=_to_epoch(r["_cr"]),
+                            body=r["_body"] or "", created_by=r["_cby"] or "", workspace=r["_ws"] or "")
         return out
 
     def fetch_runs(self, task_id: str) -> list[dict]:
@@ -681,6 +896,84 @@ class _BoardSource:
             f'SELECT * FROM {self._runs_table} WHERE "{tcol}" = ?', (task_id,)
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def _norm_run(self, d: dict, c: dict) -> dict:
+        def g(key):
+            col = c.get(key)
+            return d.get(col) if col else None
+        started = _to_epoch(g("run_started")) if g("run_started") not in (None, "") else None
+        ended = _to_epoch(g("run_ended")) if g("run_ended") not in (None, "") else None
+        dur = None
+        raw_dur = g("run_duration")
+        if raw_dur not in (None, ""):
+            try:
+                dv = float(raw_dur)
+                dcol = (c.get("run_duration") or "").lower()
+                dur = dv / 1000.0 if ("ms" in dcol or dv > 100000) else dv
+            except Exception:
+                dur = None
+        if dur is None and started and ended and ended >= started:
+            dur = float(ended - started)
+
+        def num(key):
+            v = g(key)
+            try:
+                return float(v) if v not in (None, "") else 0.0
+            except Exception:
+                return 0.0
+        return {
+            "profile": str(g("run_profile") or "unknown"),
+            "model": (str(g("run_model")).strip() if g("run_model") not in (None, "") else None),
+            "thinking": g("run_thinking"),
+            "in_tok": int(num("run_in_tok")), "out_tok": int(num("run_out_tok")),
+            "cost": num("run_cost"), "dur_s": dur, "started": started,
+            "outcome": (str(g("run_outcome")) if g("run_outcome") not in (None, "") else None),
+        }
+
+    def fetch_runs_window(self, start_ts: int, end_ts: int) -> list[dict]:
+        """Normalized runs whose start (or end) falls in [start_ts, end_ts)."""
+        self.connect()
+        if not self._runs_table:
+            return []
+        c = self._cols.get("runs", {})
+        scol = c.get("run_started") or c.get("run_ended")
+        scol_text = self._col_is_text(self._runs_table, scol) if scol else False
+        try:
+            if scol and not scol_text:
+                rows = self._conn.execute(
+                    f'SELECT * FROM {self._runs_table} WHERE "{scol}" >= ? AND "{scol}" < ?',
+                    (start_ts, end_ts)).fetchall()
+            else:
+                rows = self._conn.execute(f'SELECT * FROM {self._runs_table}').fetchall()
+        except Exception:
+            return []
+        out = []
+        for r in rows:
+            nr = self._norm_run(dict(r), c)
+            t = nr["started"]
+            if scol and scol_text:
+                if t is None or not (start_ts <= t < end_ts):
+                    continue
+            out.append(nr)
+        return out
+
+    def fetch_links(self) -> list[tuple]:
+        """Detect a dependency/handoff table and return namespaced (parent, child)."""
+        self.connect()
+        tables = self._tables()
+        for cand in ("task_links", "task_dependencies", "dependencies", "links", "edges"):
+            if cand in tables:
+                cols = self._table_cols(cand)
+                pc = next((x for x in ("parent_id", "parent", "from_id", "from", "src", "source", "blocker_id", "blocker") if x in cols), None)
+                cc = next((x for x in ("child_id", "child", "to_id", "to", "dst", "target", "blocked_id", "blocked", "dep_id") if x in cols), None)
+                if pc and cc:
+                    try:
+                        rows = self._conn.execute(f'SELECT "{pc}" AS p, "{cc}" AS c FROM {cand}').fetchall()
+                        return [(self._ns(str(r["p"])), self._ns(str(r["c"])))
+                                for r in rows if r["p"] and r["c"]]
+                    except Exception:
+                        return []
+        return []
 
     def fetch_comments(self, task_id: str) -> list[dict]:
         self.connect()
@@ -875,6 +1168,34 @@ class KanbanSource:
     def fetch_runs(self, namespaced: str) -> list[dict]:
         s = self._for(namespaced)
         return s.fetch_runs(_BoardSource.local_id(namespaced)) if s else []
+
+    def fetch_runs_window(self, start_ts: int, end_ts: int) -> list[dict]:
+        out: list[dict] = []
+        for s in self._sources:
+            try:
+                out.extend(s.fetch_runs_window(start_ts, end_ts))
+            except Exception:
+                continue
+        return out
+
+    def fetch_links(self) -> list[tuple]:
+        out: list[tuple] = []
+        for s in self._sources:
+            try:
+                out.extend(s.fetch_links())
+            except Exception:
+                continue
+        return out
+
+    def has_links_table(self) -> bool:
+        for s in self._sources:
+            try:
+                s.connect()
+                if any(t in s._tables() for t in ("task_links", "task_dependencies", "dependencies", "links", "edges")):
+                    return True
+            except Exception:
+                continue
+        return False
 
     def task_bundle(self, task_id: str, window_events: list[Event]) -> dict:
         evs = [e for e in window_events if e.task_id == task_id]
@@ -1646,6 +1967,300 @@ def _final_bucket(task_id: str, events: list) -> Optional[str]:
     return last
 
 
+_AGENT_HINTS = ("orchestrator", "agent", "worker", "curator", "ceo", "cto", "cpo", "bot")
+_TH_HANG = int(os.environ.get("REPORTS_HANG_HOURS", "48") or 48)
+_TH_LATENCY = int(os.environ.get("REPORTS_LATENCY_HOURS", "12") or 12)
+_TH_UNROUTED = int(os.environ.get("REPORTS_UNROUTED_HOURS", "6") or 6)
+
+
+def _read_phase(cfg: Config) -> str | None:
+    env = os.environ.get("REPORTS_PHASE")
+    if env:
+        return env.strip()
+    for rel in ("PHASE", "phase", "strategy-lab/PHASE", "strategy-lab/phase.txt"):
+        fp = cfg.hermes_home / rel
+        try:
+            if fp.is_file():
+                line = fp.read_text(encoding="utf-8", errors="ignore").strip().splitlines()
+                if line:
+                    return line[0].strip()[:60]
+        except Exception:
+            continue
+    return None
+
+
+def _looks_human(creator: str) -> bool:
+    """Fallback heuristic when no profile registry is available."""
+    c = _canon(creator)
+    if not c:
+        return False
+    return not any(hint in c for hint in _AGENT_HINTS)
+
+
+def _is_human(creator: str, profile_slugs: set) -> bool:
+    """A card author is human iff it is not a known agent profile (E2 rule)."""
+    c = _canon(creator)
+    if not c:
+        return False
+    if profile_slugs:
+        return c not in profile_slugs
+    return _looks_human(creator)
+
+
+def _board_light(done_ct: int, blocked_ct: int, active_ct: int, open_ct: int) -> str:
+    if blocked_ct > 0:
+        return "blocked"
+    if done_ct > 0 or active_ct > 0:
+        return "on_track"
+    if open_ct > 0:
+        return "waiting"
+    return "on_track"
+
+
+def build_overview(cfg: Config, date_str: str, board: str, events: list, tasks: dict,
+                   runs: list, hand: list, learned: list, cost: dict,
+                   board_slugs: list, start_ts: int, end_ts: int, pmeta: dict | None = None) -> dict:
+    pmeta = pmeta or {}
+    profile_slugs = set(pmeta.keys())
+    # per-board traffic lights + KPIs
+    lights = []
+    slugs = board_slugs if board in (None, "all") else [board]
+    new_total = 0
+    for slug in slugs:
+        bev = [e for e in events if _BoardSource.slug_of(e.task_id) == slug]
+        btasks = {k: v for k, v in tasks.items() if _BoardSource.slug_of(k) == slug}
+        done_ct = len({e.task_id for e in bev if e.kind in _DONE_KINDS or event_bucket(e) == "done"})
+        new_ct = len({e.task_id for e in bev if "creat" in _canon(e.kind)})
+        new_total += new_ct
+        blocked_now = sum(1 for t in btasks.values() if _bucket_of(t.status) in ("blocked", "failed"))
+        active_ct = len([e for e in bev if event_bucket(e) == "active"])
+        open_ct = sum(1 for t in btasks.values() if _bucket_of(t.status) in ("todo", "active", "blocked", "failed"))
+        lights.append({"board": slug, "light": _board_light(done_ct, blocked_now, active_ct, open_ct),
+                       "done": done_ct, "blocked": blocked_now, "open": open_ct})
+
+    # active profiles today (runs + assignees touched)
+    profs = set(r.get("profile") for r in runs if r.get("profile"))
+    touched = {e.task_id for e in events}
+    for tid in touched:
+        t = tasks.get(tid)
+        if t and t.assignee:
+            profs.add(t.assignee)
+    profs.discard("unknown"); profs.discard("")
+
+    done_ids = {e.task_id for e in events if e.kind in _DONE_KINDS or event_bucket(e) == "done"}
+    blocked_ids = {e.task_id for e in events if event_bucket(e) in ("blocked", "failed")}
+
+    # team input: human-created cards today + still unrouted (real created_by)
+    team_new = 0; team_unrouted = 0
+    cby_in_use = any(t.created_by for t in tasks.values())
+    if cby_in_use:
+        for t in tasks.values():
+            if _is_human(t.created_by, profile_slugs):
+                team_new += 1
+                if not t.assignee:
+                    team_unrouted += 1
+    else:
+        for e in events:
+            if "creat" not in _canon(e.kind):
+                continue
+            t = tasks.get(e.task_id)
+            if t and not t.assignee:
+                team_new += 1; team_unrouted += 1
+
+    # skill/SOUL change counter (best-effort: events/comments mentioning skill or soul edits)
+    skill_soul = 0
+    for e in events:
+        blob = (_canon(e.kind) + " " + _any_text(e.data or {}).lower())
+        if ("skill" in blob or "soul" in blob) and any(w in blob for w in ("edit", "change", "diff", "update", "freigab", "gate", "modif")):
+            skill_soul += 1
+
+    # next priority per board (top ready/todo by priority)
+    nexts = []
+    for slug in slugs:
+        cand = [t for k, t in tasks.items() if _BoardSource.slug_of(k) == slug and _bucket_of(t.status) == "todo"]
+        cand.sort(key=lambda t: _prio_num(t.priority), reverse=True)
+        if cand:
+            nexts.append({"board": slug, "title": cand[0].title, "task_id": cand[0].id})
+
+    phase = _read_phase(cfg)
+    if not phase:
+        caps = {}
+        for t in tasks.values():
+            if _bucket_of(t.status) in ("todo", "active", "blocked"):
+                cap = parse_body_header(t.body).get("capability")
+                if cap:
+                    caps[cap] = caps.get(cap, 0) + 1
+        if caps:
+            phase = max(caps, key=caps.get)
+
+    return {
+        "mode": "day", "board": board or "all", "phase": phase,
+        "board_lights": lights,
+        "kpis": {"done": len(done_ids), "new": new_total, "blocked": len(blocked_ids),
+                 "active_profiles": len(profs)},
+        "counters": {"lessons": len(learned), "skill_soul": skill_soul},
+        "team_input": {"new": team_new, "unrouted": team_unrouted},
+        "next_priorities": nexts,
+    }
+
+
+def _prio_num(p: Any) -> float:
+    try:
+        return float(p)
+    except Exception:
+        m = {"urgent": 3, "high": 2, "normal": 1, "med": 1, "medium": 1, "low": 0}
+        return m.get(_canon(p), 0)
+
+
+def run_verification(cfg: Config, date_str: str, src, events: list, tasks: dict,
+                     pmeta: dict, runs: list, hand: list, cost: dict, system: dict) -> dict:
+    """The 12 WFDE behavior benchmarks (B1-B12), deterministic. Each computes
+    live where the data exists, else reports 'na' (gray) — never a false red.
+    B4-B7 stay 'na' until the memory/skill/contract paths are wired (M5)."""
+    now = int(time.time())
+    headers = {tid: parse_body_header(t.body) for tid, t in tasks.items()}
+    done_ids = {e.task_id for e in events if (e.kind in _DONE_KINDS) or event_bucket(e) == "done"}
+    last_ev: dict = {}
+    for e in events:
+        last_ev[e.task_id] = max(last_ev.get(e.task_id, 0), e.ts)
+    checks = []
+
+    def add(cid, label, status, detail="", refs=None):
+        checks.append({"id": cid, "label": label, "status": status,
+                       "detail": detail, "refs": refs or []})
+
+    # B1 · Routing & ownership (needs profile lanes from E11)
+    lanes_present = any((pmeta.get(p, {}).get("departments") or pmeta.get(p, {}).get("capabilities"))
+                        for p in pmeta)
+    if lanes_present:
+        mism = []
+        for tid, t in tasks.items():
+            if _bucket_of(t.status) in ("done", "active") and t.assignee:
+                hd = headers[tid]; pm = pmeta.get(_canon(t.assignee), {})
+                deps = [_canon(x) for x in pm.get("departments", [])]
+                caps = [_canon(x) for x in pm.get("capabilities", [])]
+                if deps and hd.get("department") and _canon(hd["department"]) not in deps:
+                    mism.append(tid)
+                elif caps and hd.get("capability") and _canon(hd["capability"]) not in caps:
+                    mism.append(tid)
+        add("routing", "Routing & ownership", "red" if mism else "green",
+            (f"{len(mism)} lane mismatch" if mism else "assignees fit their lane"), mism[:8])
+    else:
+        add("routing", "Routing & ownership", "na", "no profile lanes found (E11)")
+
+    # B2 · Handoffs closed (needs task_links from E4)
+    if src.has_links_table():
+        links = src.fetch_links()
+        seen = set(t for t in tasks if _bucket_of(tasks[t].status) in ("done", "active"))
+        for e in events:
+            k = _canon(e.kind)
+            if "claim" in k or "assign" in k or event_bucket(e) in ("active", "done"):
+                seen.add(e.task_id)
+        orphans = [c for (p, c) in links if c not in seen]
+        add("handoffs", "Handoffs closed", "red" if orphans else "green",
+            (f"{len(orphans)} open handoff(s)" if orphans else "chains closed"), orphans[:8])
+    else:
+        add("handoffs", "Handoffs closed", "na", "no task_links table (E4)")
+
+    # B3 · Gate integrity (markers in body + comments)
+    def task_markers(tid, t):
+        m = extract_markers(t.body)
+        try:
+            for cm in src.fetch_comments(tid):
+                m |= extract_markers(_any_text(cm))
+        except Exception:
+            pass
+        return m
+    gates_anywhere = any(extract_markers(t.body) & _GATE_MARKERS for t in tasks.values())
+    done_missing = []
+    for tid in done_ids:
+        t = tasks.get(tid)
+        if not t:
+            continue
+        mk = task_markers(tid, t)
+        if mk & _GATE_MARKERS:
+            gates_anywhere = True
+        else:
+            done_missing.append(tid)
+    if gates_anywhere:
+        add("gate_integrity", "Gate integrity", "red" if done_missing else "green",
+            (f"{len(done_missing)} done w/o gate" if done_missing else "every done passed a gate"),
+            done_missing[:8])
+    else:
+        add("gate_integrity", "Gate integrity", "na", "no gate markers in use (E5)")
+
+    # B4-B7 · need memory / skill / contract paths (M5)
+    add("ceo_exclusivity", "CEO exclusivity", "na", "needs validated-decisions.md (E8)")
+    add("memory_provenance", "Memory provenance", "na", "needs memory files (E7/E8)")
+    add("memory_pollution", "Memory pollution", "na", "needs memory-curator signal (E?)")
+    add("skill_soul_auth", "Skill/SOUL authorization", "na", "needs skill diffs + _backups (E9)")
+
+    # B8 · Execution anchoring (workspace / output)
+    ws_in_use = any(t.workspace for t in tasks.values())
+    out_in_use = any(headers[tid].get("output") for tid in tasks)
+    if ws_in_use or out_in_use:
+        miss = []
+        for tid in done_ids:
+            t = tasks.get(tid)
+            if not t:
+                continue
+            hd = headers[tid]
+            is_build = bool(hd.get("service") or hd.get("output"))
+            if (is_build or ws_in_use) and not t.workspace:
+                miss.append(tid)
+        add("execution_anchor", "Execution anchoring", "red" if miss else "green",
+            (f"{len(miss)} done w/o workspace" if miss else "outputs anchored"), miss[:8])
+    else:
+        add("execution_anchor", "Execution anchoring", "na", "no workspace/output data (E2)")
+
+    # B9 · Manual inputs routed
+    profile_slugs = set(pmeta.keys())
+    cby_in_use = any(t.created_by for t in tasks.values())
+    cutoff = _TH_UNROUTED * 3600
+    if cby_in_use:
+        unrouted = [t for t in tasks.values() if _is_human(t.created_by, profile_slugs)
+                    and not t.assignee and (now - (t.created or now)) > cutoff]
+        add("manual_inputs", "Manual inputs routed", "red" if unrouted else "green",
+            (f"{len(unrouted)} unrouted >{_TH_UNROUTED}h" if unrouted else "team cards routed"),
+            [t.id for t in unrouted][:8])
+    else:
+        unrouted = [t for t in tasks.values() if not t.assignee and (now - (t.created or now)) > cutoff]
+        add("manual_inputs", "Manual inputs routed", "red" if unrouted else "green",
+            (f"{len(unrouted)} unrouted >{_TH_UNROUTED}h (no created_by)" if unrouted else "all routed"),
+            [t.id for t in unrouted][:8])
+
+    # B10 · Progress vs phase (hang_hours)
+    stuck = [tid for tid, t in tasks.items()
+             if _bucket_of(t.status) not in ("done",) and t.created
+             and (now - last_ev.get(tid, t.created)) > _TH_HANG * 3600]
+    add("progress_phase", "Progress vs phase", "red" if stuck else "green",
+        (f"{len(stuck)} cards stuck >{_TH_HANG}h" if stuck else "cards moving toward done"), stuck[:8])
+
+    # B11 · Reaction latency (latency_hours)
+    created_ts: dict = {}; claimed_ts: dict = {}
+    for e in events:
+        k = _canon(e.kind)
+        if "creat" in k:
+            created_ts[e.task_id] = min(created_ts.get(e.task_id, e.ts), e.ts)
+        if "claim" in k or "assign" in k or event_bucket(e) == "active":
+            claimed_ts[e.task_id] = min(claimed_ts.get(e.task_id, e.ts), e.ts)
+    laggy = [tid for tid, cts in created_ts.items()
+             if (claimed_ts.get(tid, now) - cts) > _TH_LATENCY * 3600 and (now - cts) > _TH_LATENCY * 3600]
+    add("latency", "Reaction latency", "red" if laggy else "green",
+        (f"{len(laggy)} inputs unhandled >{_TH_LATENCY}h" if laggy else "responsive"), laggy[:8])
+
+    # B12 · Cost & health
+    over = (cost.get("today_eur", 0) or 0) > (cost.get("budget_daily", 0) or 0)
+    unstable = not system.get("stable", True)
+    add("cost_health", "Cost & health", "red" if (over or unstable) else "green",
+        (("over budget" if over else "") + (" / unstable" if unstable else "")) or "in budget, stable")
+
+    green = sum(1 for c in checks if c["status"] == "green")
+    red = sum(1 for c in checks if c["status"] == "red")
+    na = sum(1 for c in checks if c["status"] == "na")
+    return {"checks": checks, "green": green, "red": red, "na": na, "total": len(checks)}
+
+
 def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = True,
                  board: str = "all") -> dict:
     start_ts, end_ts, _ = day_bounds(date_str, cfg.timezone)
@@ -1735,6 +2350,17 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = 
         # 6) learned (optional, lightweight: pull short comment lines tagged as notes)
         learned = _extract_learned(src, events, tasks)
 
+        # 7) model / profile usage (latency, tokens, thinking) for model selection
+        pmeta = profile_meta(cfg)
+        runs_window = src.fetch_runs_window(start_ts, end_ts)
+        models = build_models(runs_window, pmeta)
+
+        # 8) Part-1 overview + 12-point verification layer
+        overview = build_overview(cfg, date_str, board, events, tasks, runs_window,
+                                  hand, learned, cost, src.board_slugs(), start_ts, end_ts, pmeta)
+        verification = run_verification(cfg, date_str, src, events, tasks, pmeta,
+                                        runs_window, hand, cost, system)
+
         status = (_STATUS_WORD[lang]["active"] if hand or done
                   else _STATUS_WORD[lang]["quiet"])
         digest = {
@@ -1744,6 +2370,7 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = 
                        "cost_eur": round(today_eur, 2), "budget_eur": cfg.budget_daily_eur},
             "hand": [_decision_view(d) for d in hand],
             "in_progress": in_progress, "done": done, "learned": learned,
+            "models": models, "overview": overview, "verification": verification,
             "cost": cost, "system": system,
             "decision_stats": store.decision_stats(_month_start_ts(date_str, cfg.timezone)),
         }
@@ -1880,6 +2507,15 @@ def build_range(cfg: Config, from_date: str, to_date: str, board: str = "all") -
     end = datetime.strptime(to_date, "%Y-%m-%d").replace(tzinfo=z)
     store = Store(cfg)
     days, cur = [], start
+    src = KanbanSource(cfg, None if board in (None, "", "all") else board)
+    try:
+        rstart, _, _ = day_bounds(from_date, cfg.timezone)
+        _, rend, _ = day_bounds(to_date, cfg.timezone)
+        range_models = build_models(src.fetch_runs_window(rstart, rend), profile_meta(cfg))
+    except Exception:
+        range_models = {"by_profile": [], "by_model": [], "available": {}, "total_runs": 0}
+    finally:
+        src.close()
     try:
         while cur <= end:
             ds = cur.strftime("%Y-%m-%d")
@@ -1902,7 +2538,7 @@ def build_range(cfg: Config, from_date: str, to_date: str, board: str = "all") -
             "cost_eur": cost_sum, "done": done, "hand": hand_open,
             "budget_daily": cfg.budget_daily_eur, "budget_monthly": cfg.budget_monthly_eur,
             "num_days": len(days),
-            "learned": learned, "decision_stats": stats,
+            "learned": learned, "decision_stats": stats, "models": range_models,
             "days": [{"date": d["date"], "cost": d["cost"]["today_eur"],
                       "done": len(d["done"]), "open": len(d["hand"])} for d in days],
         }
