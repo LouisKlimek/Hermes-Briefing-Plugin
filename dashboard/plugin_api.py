@@ -1597,7 +1597,7 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = 
         system = {"stable": not err, "notes": notes}
 
         # 6) learned (optional, lightweight: pull short comment lines tagged as notes)
-        learned = _extract_learned(src, events)
+        learned = _extract_learned(src, events, tasks)
 
         status = (_STATUS_WORD[lang]["active"] if hand or done
                   else _STATUS_WORD[lang]["quiet"])
@@ -1632,25 +1632,55 @@ def _decision_view(d: dict) -> dict:
             "deadline": d.get("deadline")}
 
 
-def _extract_learned(src: KanbanSource, events: list[Event]) -> list[str]:
-    """Very light: surface short 'notiert'/'learned'-style comment lines, if any."""
-    out: list[str] = []
-    seen = set()
+_LEARNED_TAGS = ("gelernt", "learned", "notiert", "erkenntnis", "lesson", "insight")
+_LEARNED_PREFIXES = ("notiert:", "gelernt:", "learned:", "erkenntnis:", "lesson:", "insight:")
+
+
+def _clean_md(text: str) -> str:
+    t = text or ""
+    t = re.sub(r"`{1,3}([^`]*)`{1,3}", r"\1", t)      # inline code
+    t = re.sub(r"\*\*([^*]+)\*\*", r"\1", t)          # bold
+    t = re.sub(r"[*_#>~]+", " ", t)                   # stray md tokens / headers
+    t = re.sub(r"^\s*[-•\d.]+\s*", "", t)             # leading list/number markers
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+def _extract_learned(src: KanbanSource, events: list[Event], tasks: dict | None = None) -> list[dict]:
+    """Surface short, cleaned 'learned/erkenntnis'-style notes from comments and
+    tie each to its task so the UI can link to the ticket. Markdown is stripped."""
+    tasks = tasks or {}
+    out: list[dict] = []
+    seen: set[str] = set()
     for tid in {e.task_id for e in events}:
         for c in src.fetch_comments(tid):
             body = _any_text(c).strip()
             low = body.lower()
-            if any(tag in low for tag in ("gelernt", "learned", "notiert", "erkenntnis", "lesson")):
-                line = " ".join(body.split())
-                for tag in ("Notiert:", "notiert:", "Gelernt:", "gelernt:", "Learned:", "learned:", "Erkenntnis:"):
-                    if line.startswith(tag):
-                        line = line[len(tag):].strip()
-                        break
-                line = line[:120]
-                if line and line not in seen:
-                    seen.add(line)
-                    out.append(line)
-    return out[:5]
+            if not any(tag in low for tag in _LEARNED_TAGS):
+                continue
+            # pick the specific line carrying the tag, not the whole document
+            line = None
+            for raw in re.split(r"[\r\n]+", body):
+                if any(tag in raw.lower() for tag in _LEARNED_TAGS):
+                    line = raw
+                    break
+            line = _clean_md(line or body)
+            low2 = line.lower()
+            for pre in _LEARNED_PREFIXES:
+                if low2.startswith(pre):
+                    line = line[len(pre):].strip()
+                    break
+            # "Kern-Erkenntnis: X" -> "X" when the label itself is the tag
+            if ":" in line:
+                head, _, rest = line.partition(":")
+                if rest.strip() and len(head) <= 60 and any(t in head.lower() for t in _LEARNED_TAGS):
+                    line = rest.strip()
+            line = line[:180].strip()
+            if line and line not in seen:
+                seen.add(line)
+                t = tasks.get(tid)
+                out.append({"text": line, "task_id": tid, "title": t.title if t else None})
+    return out[:8]
 
 
 def build_recent(cfg: Config, days: int = 7, board: str = "all") -> dict:
@@ -1722,7 +1752,12 @@ def build_range(cfg: Config, from_date: str, to_date: str, board: str = "all") -
         cost_sum = round(sum(d["cost"]["today_eur"] for d in days), 2)
         done = [item for d in days for item in d["done"]]
         hand_open = days[-1]["hand"] if days else []
-        learned = list({l for d in days for l in d.get("learned", [])})
+        seen_l: set = set(); learned = []
+        for d in days:
+            for l in d.get("learned", []):
+                key = l.get("text") if isinstance(l, dict) else l
+                if key and key not in seen_l:
+                    seen_l.add(key); learned.append(l)
         stats = days[-1]["decision_stats"] if days else {}
         return {
             "range": "custom", "from": from_date, "to": to_date, "board": board,
@@ -1818,7 +1853,8 @@ def render_day(digest: dict, tz: str = "Europe/Berlin", lang: str = "en") -> str
         more = f" (+{len(digest['in_progress']) - 6})" if len(digest["in_progress"]) > 6 else ""
         lines.append(f"  {L['wip']:<9} {names}{more}")
     for l in digest.get("learned", []):
-        lines.append(f"  {L['noted']:<9} {l}")
+        txt = l.get("text") if isinstance(l, dict) else l
+        lines.append(f"  {L['noted']:<9} {txt}")
 
     cd = cost["today_eur"] / cost["budget_daily"] if cost["budget_daily"] else 0
     near = L["near"] if cd >= 0.8 else ""
@@ -1862,7 +1898,8 @@ def render_range(roll: dict, title: str | None = None, lang: str = "en") -> str:
     if roll.get("learned"):
         lines += ["", f"▸ {L['learned']}"]
         for l in roll["learned"][:10]:
-            lines.append(f"  • {l}")
+            txt = l.get("text") if isinstance(l, dict) else l
+            lines.append(f"  • {txt}")
     return "\n".join(lines) + "\n"
 
 

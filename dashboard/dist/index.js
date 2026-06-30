@@ -165,6 +165,23 @@
       }));
   }
 
+  function LearnedCards(props) {
+    var items = props.items || [];
+    return h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: "0.55rem" } },
+      items.map(function (l, i) {
+        var text = (typeof l === "string") ? l : (l && l.text) || "";
+        var tid = (l && l.task_id) || "";
+        var title = (l && l.title) || "";
+        var t = ticketHref(tid, props.target);
+        return h("div", { key: i, className: "brf-card", style: { position: "relative", border: "1px solid var(--color-border)", borderLeft: "3px solid var(--color-primary, var(--color-accent-foreground, #6b8afd))", borderRadius: "0.55rem", padding: "0.55rem 0.7rem", background: "var(--color-card)" } },
+          h("div", { style: { fontSize: "0.62rem", textTransform: "uppercase", letterSpacing: "0.07em", color: "var(--color-primary, #6b8afd)", fontWeight: 700, marginBottom: "0.2rem" } }, "\uD83D\uDCA1 Insight"),
+          h("div", { style: { fontSize: "0.81rem", lineHeight: 1.5 } }, text),
+          (title || tid) ? h("div", { style: { display: "flex", alignItems: "center", gap: "0.5rem", marginTop: "0.45rem" } },
+            title ? h("span", { style: { fontSize: "0.72rem", color: MUTED, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, title) : null,
+            tid ? h("a", { href: t.url, style: { marginLeft: "auto", fontSize: "0.72rem", fontWeight: 600, textDecoration: "none", color: "inherit", border: "1px solid var(--color-border)", borderRadius: "0.4rem", padding: "0.08rem 0.45rem", whiteSpace: "nowrap" } }, "Open ticket \u2192") : null) : null);
+      }));
+  }
+
   function boardOf(taskId) { var i = (taskId || "").indexOf("::"); return i >= 0 ? taskId.slice(0, i) : ""; }
 
   // Readable Done view: cards in a responsive grid, grouped by board when more
@@ -180,9 +197,11 @@
         h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: "0.55rem" } },
           groups[b].map(function (it, i) {
             var why = (it.bullets && it.bullets[0]) || it.why || "";
-            return h("div", { key: i, className: "brf-card", style: { border: "1px solid var(--color-border)", borderRadius: "0.55rem", padding: "0.6rem 0.75rem", background: "var(--color-card)" } },
-              h("div", { style: { fontSize: "0.86rem", fontWeight: 600, lineHeight: 1.35, marginBottom: why ? "0.35rem" : 0 } }, it.title),
-              why ? h("div", { style: { fontSize: "0.78rem", color: MUTED, lineHeight: 1.5, display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" } }, why) : null);
+            var t = ticketHref(it.task_id, props.target);
+            return h("div", { key: i, className: "brf-card", style: { display: "flex", flexDirection: "column", border: "1px solid var(--color-border)", borderRadius: "0.55rem", padding: "0.6rem 0.75rem", background: "var(--color-card)" } },
+              h("div", { style: { fontSize: "0.86rem", fontWeight: 600, lineHeight: 1.35, marginBottom: why ? "0.35rem" : "0.4rem" } }, it.title),
+              why ? h("div", { style: { fontSize: "0.78rem", color: MUTED, lineHeight: 1.5, marginBottom: "0.5rem", display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" } }, why) : null,
+              it.task_id ? h("a", { href: t.url, style: { marginTop: "auto", alignSelf: "flex-start", fontSize: "0.74rem", fontWeight: 600, textDecoration: "none", color: "inherit", border: "1px solid var(--color-border)", borderRadius: "0.4rem", padding: "0.1rem 0.5rem" } }, "Open ticket \u2192") : null);
           })));
     }));
   }
@@ -206,16 +225,17 @@
       Separator ? h(Separator, { style: { margin: "0.5rem 0" } }) : null,
 
       (digest.done && digest.done.length)
-        ? h(Section, { title: "Done (" + digest.done.length + ")" }, h(DoneGrid, { items: digest.done }))
+        ? h(Section, { title: "Done (" + digest.done.length + ")" }, h(DoneGrid, { items: digest.done, target: props.target }))
         : null,
       (digest.in_progress && digest.in_progress.length)
         ? h(Section, { title: "Active (" + digest.in_progress.length + ")" },
             h("div", { style: { display: "flex", flexWrap: "wrap", gap: "0.35rem" } },
               digest.in_progress.map(function (t, i) {
-                return h("span", { key: i, style: { fontSize: "0.78rem", padding: "0.15rem 0.5rem", border: "1px solid var(--color-border)", borderRadius: "999px", background: "var(--color-card)" } }, t.title); })))
+                var th = ticketHref(t.task_id, props.target);
+                return h("a", { key: i, href: th.url, style: { fontSize: "0.78rem", textDecoration: "none", color: "inherit", padding: "0.15rem 0.5rem", border: "1px solid var(--color-border)", borderRadius: "999px", background: "var(--color-card)" } }, t.title); })))
         : null,
       (digest.learned && digest.learned.length)
-        ? h(Section, { title: "Noted" }, digest.learned.map(function (l, i) { return h("div", { key: i, style: { fontSize: "0.82rem", marginBottom: "0.2rem" } }, "\u2022 " + l); }))
+        ? h(Section, { title: "Insights (" + digest.learned.length + ")" }, h(LearnedCards, { items: digest.learned, target: props.target }))
         : null,
       h(Section, { title: "Cost" },
         h("div", { style: { fontSize: "0.84rem" } },
@@ -246,10 +266,9 @@
               h("div", { style: { fontSize: "0.85rem", fontWeight: 600, lineHeight: 1.35 } }, d.title),
               d.detail ? h("div", { style: { fontSize: "0.76rem", color: MUTED, lineHeight: 1.5, marginTop: "0.25rem", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" } }, d.detail) : null,
               h("a", { href: t.url, style: { display: "inline-block", marginTop: "0.4rem", fontSize: "0.76rem", fontWeight: 600, textDecoration: "none", color: "inherit", border: "1px solid var(--color-border)", borderRadius: "0.4rem", padding: "0.12rem 0.5rem" } }, "Open ticket \u2192")); }))) : null,
-      (r.done && r.done.length) ? h(Section, { title: "Done (" + r.done.length + ")" }, h(DoneGrid, { items: r.done }))
+      (r.done && r.done.length) ? h(Section, { title: "Done (" + r.done.length + ")" }, h(DoneGrid, { items: r.done, target: props.target }))
         : h(Section, { title: "Done" }, h("div", { style: { fontSize: "0.82rem", color: MUTED } }, "Nothing recorded in this range.")),
-      (r.learned && r.learned.length) ? h(Section, { title: "Learned" }, r.learned.map(function (l, i) {
-          return h("div", { key: i, style: { fontSize: "0.82rem", marginBottom: "0.2rem" } }, "\u2022 " + l); })) : null);
+      (r.learned && r.learned.length) ? h(Section, { title: "Insights (" + r.learned.length + ")" }, h(LearnedCards, { items: r.learned, target: props.target })) : null);
     function stat(label, val) {
       return h("div", null,
         h("div", { style: { fontSize: "0.68rem", textTransform: "uppercase", letterSpacing: "0.06em", color: MUTED } }, label),
