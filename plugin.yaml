@@ -1,0 +1,4 @@
+name: briefing
+version: 0.1.0
+description: "Daily / weekly / monthly briefings from the Hermes kanban activity — what got done, what it cost, why, and what needs your hand. The product is the dashboard tab in dashboard/ (Day/Week/Month views + on-demand build API); this root module only carries the plugin identity. No agent-side tools or hooks."
+author: Louis Klimek
