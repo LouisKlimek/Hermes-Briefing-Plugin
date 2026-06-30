@@ -150,14 +150,41 @@
 
   function MiniBars(props) {
     var rows = props.rows || [], field = props.field || "cost";
-    var max = Math.max.apply(null, rows.map(function (r) { return r[field] || 0; }).concat([0.0001]));
-    return h("div", { style: { display: "flex", alignItems: "flex-end", gap: "4px", height: "60px", marginTop: "0.4rem" } },
+    var vals = rows.map(function (r) { return r[field] || 0; });
+    var max = Math.max.apply(null, vals.concat([0.0001]));
+    var H = 64; // px height available for a full bar
+    return h("div", { style: { display: "flex", alignItems: "flex-end", gap: "3px", height: (H + 16) + "px", marginTop: "0.4rem" } },
       rows.map(function (r, i) {
-        var pct = Math.round(((r[field] || 0) / max) * 100);
-        return h("div", { key: r.date, title: r.date + ": " + (r[field] || 0), style: { flex: 1, display: "flex", flexDirection: "column", justifyContent: "flex-end", alignItems: "center" } },
-          h("div", { className: "brf-progress-fill", style: { width: "100%", height: Math.max(3, pct) + "%", borderRadius: "3px", transition: "height .5s ease", transitionDelay: (i * 30) + "ms" } }),
+        var v = r[field] || 0;
+        var px = v > 0 ? Math.max(4, Math.round((v / max) * H)) : 0;
+        return h("div", { key: r.date, title: r.date + ": " + v, style: { flex: 1, display: "flex", flexDirection: "column", justifyContent: "flex-end", alignItems: "center", height: "100%" } },
+          h("div", { style: { width: "72%", height: px + "px", borderRadius: "3px 3px 0 0",
+              background: "var(--color-primary, var(--color-accent-foreground, #6b8afd))",
+              transition: "height .5s ease", transitionDelay: (i * 20) + "ms" } }),
           h("div", { style: { fontSize: "0.6rem", color: MUTED, marginTop: "2px" } }, r.date.slice(8)));
       }));
+  }
+
+  function boardOf(taskId) { var i = (taskId || "").indexOf("::"); return i >= 0 ? taskId.slice(0, i) : ""; }
+
+  // Readable Done view: cards in a responsive grid, grouped by board when more
+  // than one board is present. Long "why" text is clamped to keep cards even.
+  function DoneGrid(props) {
+    var items = props.items || [];
+    var groups = {}, order = [];
+    items.forEach(function (it) { var b = boardOf(it.task_id) || "\u2014"; if (!groups[b]) { groups[b] = []; order.push(b); } groups[b].push(it); });
+    var multi = order.length > 1;
+    return h("div", null, order.map(function (b) {
+      return h("div", { key: b, style: { marginBottom: "0.9rem" } },
+        multi ? h("div", { style: { fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: "0.06em", color: MUTED, margin: "0.1rem 0 0.45rem", fontWeight: 600 } }, b + " \u00b7 " + groups[b].length) : null,
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: "0.55rem" } },
+          groups[b].map(function (it, i) {
+            var why = (it.bullets && it.bullets[0]) || it.why || "";
+            return h("div", { key: i, className: "brf-card", style: { border: "1px solid var(--color-border)", borderRadius: "0.55rem", padding: "0.6rem 0.75rem", background: "var(--color-card)" } },
+              h("div", { style: { fontSize: "0.86rem", fontWeight: 600, lineHeight: 1.35, marginBottom: why ? "0.35rem" : 0 } }, it.title),
+              why ? h("div", { style: { fontSize: "0.78rem", color: MUTED, lineHeight: 1.5, display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" } }, why) : null);
+          })));
+    }));
   }
 
   function DigestView(props) {
@@ -179,14 +206,13 @@
       Separator ? h(Separator, { style: { margin: "0.5rem 0" } }) : null,
 
       (digest.done && digest.done.length)
-        ? h(Section, { title: "Done (" + digest.done.length + ")" }, digest.done.map(function (it, i) {
-            var b = (it.bullets && it.bullets[0]) || it.why || "done";
-            return h("div", { key: i, className: "brf-card", style: { border: "1px solid var(--color-border)", borderRadius: "0.45rem", padding: "0.4rem 0.6rem", marginBottom: "0.35rem", background: "var(--color-card)" } },
-              h("div", { style: { fontSize: "0.85rem", fontWeight: 600 } }, it.title),
-              b ? h("div", { style: { fontSize: "0.78rem", color: MUTED, marginTop: "0.1rem" } }, b) : null); }))
+        ? h(Section, { title: "Done (" + digest.done.length + ")" }, h(DoneGrid, { items: digest.done }))
         : null,
       (digest.in_progress && digest.in_progress.length)
-        ? h(Section, { title: "Active" }, h("div", { style: { fontSize: "0.84rem" } }, digest.in_progress.map(function (t) { return t.title; }).join(", ")))
+        ? h(Section, { title: "Active (" + digest.in_progress.length + ")" },
+            h("div", { style: { display: "flex", flexWrap: "wrap", gap: "0.35rem" } },
+              digest.in_progress.map(function (t, i) {
+                return h("span", { key: i, style: { fontSize: "0.78rem", padding: "0.15rem 0.5rem", border: "1px solid var(--color-border)", borderRadius: "999px", background: "var(--color-card)" } }, t.title); })))
         : null,
       (digest.learned && digest.learned.length)
         ? h(Section, { title: "Noted" }, digest.learned.map(function (l, i) { return h("div", { key: i, style: { fontSize: "0.82rem", marginBottom: "0.2rem" } }, "\u2022 " + l); }))
@@ -212,15 +238,15 @@
       (r.days && r.days.length) ? h("div", { style: { display: "flex", gap: "1.5rem", flexWrap: "wrap" } },
         h("div", { style: { flex: "1 1 220px" } }, h(Section, { title: "Done per day" }, h(MiniBars, { rows: r.days, field: "done" }))),
         h("div", { style: { flex: "1 1 220px" } }, h(Section, { title: "Daily cost" }, h(MiniBars, { rows: r.days, field: "cost" })))) : null,
-      (r.hand && r.hand.length) ? h(Section, { title: "Still open" }, r.hand.map(function (d, i) {
-          var t = ticketHref(d.task_id, props.target);
-          return h("div", { key: i, style: { fontSize: "0.84rem", marginBottom: "0.2rem" } }, "\u2022 ",
-            h("a", { href: t.url, style: { color: "inherit", textDecoration: "underline", textUnderlineOffset: "2px" } }, d.title)); })) : null,
-      (r.done && r.done.length) ? h(Section, { title: "Done (" + r.done.length + ")" }, r.done.slice(0, 80).map(function (it, i) {
-          var b = (it.bullets && it.bullets[0]) || it.why || "done";
-          return h("div", { key: i, className: "brf-card", style: { border: "1px solid var(--color-border)", borderRadius: "0.45rem", padding: "0.4rem 0.6rem", marginBottom: "0.35rem", background: "var(--color-card)" } },
-            h("div", { style: { fontSize: "0.85rem", fontWeight: 600 } }, it.title),
-            b ? h("div", { style: { fontSize: "0.78rem", color: MUTED, marginTop: "0.1rem" } }, b) : null); }))
+      (r.hand && r.hand.length) ? h(Section, { title: "Still open (" + r.hand.length + ")" },
+        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: "0.5rem" } },
+          r.hand.map(function (d, i) {
+            var t = ticketHref(d.task_id, props.target);
+            return h("div", { key: i, className: "brf-card", style: { border: "1px solid var(--color-border)", borderRadius: "0.55rem", padding: "0.55rem 0.7rem", background: "var(--color-card)" } },
+              h("div", { style: { fontSize: "0.85rem", fontWeight: 600, lineHeight: 1.35 } }, d.title),
+              d.detail ? h("div", { style: { fontSize: "0.76rem", color: MUTED, lineHeight: 1.5, marginTop: "0.25rem", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" } }, d.detail) : null,
+              h("a", { href: t.url, style: { display: "inline-block", marginTop: "0.4rem", fontSize: "0.76rem", fontWeight: 600, textDecoration: "none", color: "inherit", border: "1px solid var(--color-border)", borderRadius: "0.4rem", padding: "0.12rem 0.5rem" } }, "Open ticket \u2192")); }))) : null,
+      (r.done && r.done.length) ? h(Section, { title: "Done (" + r.done.length + ")" }, h(DoneGrid, { items: r.done }))
         : h(Section, { title: "Done" }, h("div", { style: { fontSize: "0.82rem", color: MUTED } }, "Nothing recorded in this range.")),
       (r.learned && r.learned.length) ? h(Section, { title: "Learned" }, r.learned.map(function (l, i) {
           return h("div", { key: i, style: { fontSize: "0.82rem", marginBottom: "0.2rem" } }, "\u2022 " + l); })) : null);
