@@ -416,28 +416,52 @@ def _looks_like_color(v: Any) -> bool:
             or bool(re.match(r"^[a-z]+$", s)))   # named css color
 
 
+def _walk_colors(obj: Any, out: dict) -> None:
+    if isinstance(obj, dict):
+        nm = (obj.get("name") or obj.get("label") or obj.get("status")
+              or obj.get("title") or obj.get("key") or obj.get("id") or obj.get("slug"))
+        col = obj.get("color") or obj.get("colour") or obj.get("hex")
+        if nm and _looks_like_color(col):
+            out.setdefault(_canon(nm), col.strip())
+        for v in obj.values():
+            _walk_colors(v, out)
+    elif isinstance(obj, list):
+        for v in obj:
+            _walk_colors(v, out)
+
+
 def _harvest_json_colors(text: Any, out: dict) -> None:
     """Walk a JSON string (or fragment) collecting {name/label/status: color}."""
     if not isinstance(text, str) or "color" not in text.lower():
         return
     try:
-        data = json.loads(text)
+        _walk_colors(json.loads(text), out)
     except Exception:
         return
 
-    def walk(obj):
-        if isinstance(obj, dict):
-            nm = (obj.get("name") or obj.get("label") or obj.get("status")
-                  or obj.get("title") or obj.get("key") or obj.get("id") or obj.get("slug"))
-            col = obj.get("color") or obj.get("colour") or obj.get("hex")
-            if nm and _looks_like_color(col):
-                out.setdefault(_canon(nm), col.strip())
-            for v in obj.values():
-                walk(v)
-        elif isinstance(obj, list):
-            for v in obj:
-                walk(v)
-    walk(data)
+
+def _scan_files_for_colors(paths, out: dict) -> None:
+    """Parse JSON/YAML config files for status/column color definitions."""
+    for fp in paths:
+        try:
+            if not fp.is_file() or fp.stat().st_size > 2_000_000:
+                continue
+            text = fp.read_text(encoding="utf-8", errors="ignore")
+            if "color" not in text.lower():
+                continue
+            obj = None
+            try:
+                obj = json.loads(text)
+            except Exception:
+                try:
+                    import yaml  # PyYAML is a dependency
+                    obj = yaml.safe_load(text)
+                except Exception:
+                    obj = None
+            if obj is not None:
+                _walk_colors(obj, out)
+        except Exception:
+            continue
 
 
 def _to_epoch(v: Any) -> int:
@@ -728,6 +752,13 @@ class _BoardSource:
                     continue
                 for r in rows:
                     _harvest_json_colors(r[0], out)
+        # (c) config files next to the board db (board.json, columns.yaml, ...)
+        try:
+            bdir = self.path.parent
+            files = list(bdir.glob("*.json")) + list(bdir.glob("*.yaml")) + list(bdir.glob("*.yml"))
+            _scan_files_for_colors(files, out)
+        except Exception:
+            pass
         return out
 
     def event_ts_bounds(self) -> "tuple[int, int] | None":
@@ -891,6 +922,17 @@ class KanbanSource:
                     out.setdefault(k, v)
             except Exception:
                 continue
+        # global kanban config files (colors may live outside per-board dbs)
+        try:
+            roots = [self.cfg.hermes_home, self.cfg.hermes_home / "kanban"]
+            files = []
+            for root in roots:
+                if root.is_dir():
+                    for ext in ("*.json", "*.yaml", "*.yml"):
+                        files += list(root.glob(ext))
+            _scan_files_for_colors(files, out)
+        except Exception:
+            pass
         return out
 
     def close(self) -> None:
@@ -1639,6 +1681,11 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = 
                 if board not in (None, "all") and _BoardSource.slug_of(od.get("task_id", "")) != board:
                     continue        # other board's carry-over — not in this view
                 hand.append(od)
+        # color/label by the task's real kanban status where we have it
+        for d in hand:
+            t = tasks.get(d.get("task_id"))
+            if t and t.status:
+                d["status"] = t.status
 
         # 2) completed today -> AI/heuristic summary. Schema-agnostic: a task is
         #    "done today" if any event this day transitions it to a done-bucket
@@ -1651,6 +1698,7 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = 
             s = summarize_task(bundle, cfg, store)
             t = tasks.get(tid)
             done.append({"task_id": tid, "title": t.title if t else tid,
+                         "status": (t.status if t else "done"),
                          "bullets": s["bullets"], "why": s["why"]})
 
         # 3) in progress now (snapshot, not window)
@@ -1717,6 +1765,7 @@ def _days_into_month(date_str: str, tz: str) -> int:
 def _decision_view(d: dict) -> dict:
     return {"id": d["id"], "kind": d["kind"], "title": d["title"],
             "detail": d.get("detail", ""), "task_id": d.get("task_id"),
+            "status": d.get("status") or d.get("kind"),
             "deadline": d.get("deadline")}
 
 

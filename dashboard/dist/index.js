@@ -71,21 +71,28 @@
     active: ["in_progress", "running", "claimed", "active", "doing"],
     todo: ["todo", "ready", "triage", "scheduled", "backlog", "new"]
   };
+  function canonStatus(s) { return String(s || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, ""); }
   function kanbanColorFor(kind) {
     var k = (kind || "").toLowerCase();
     var cands = KIND_TO_STATUS[k] || [k];
     for (var i = 0; i < cands.length; i++) { if (KANBAN_COLORS[cands[i]]) return KANBAN_COLORS[cands[i]]; }
     return null;
   }
-  function statusColor(kind) {
-    return kanbanColorFor(kind) || STATUS_COLORS[(kind || "").toLowerCase()] || "#9ca3af";
+  // Prefer the task's REAL kanban status color; fall back to a kind mapping,
+  // then to the built-in palette. Works for any custom status set.
+  function resolveColor(status, kind) {
+    if (status) { var c = KANBAN_COLORS[canonStatus(status)]; if (c) return c; }
+    var kc = kanbanColorFor(kind || status); if (kc) return kc;
+    if (status && STATUS_COLORS[canonStatus(status)]) return STATUS_COLORS[canonStatus(status)];
+    return STATUS_COLORS[(kind || "").toLowerCase()] || "#9ca3af";
   }
+  function statusColor(kind) { return resolveColor(null, kind); }
   function colorChrome(c) {
     var isHex = /^#([0-9a-fA-F]{6})$/.test(c);
     return { color: c, background: isHex ? c + "22" : "transparent", border: "1px solid " + (isHex ? c + "77" : c) };
   }
   function StatusBadge(props) {
-    var ch = colorChrome(statusColor(props.kind));
+    var ch = colorChrome(resolveColor(props.status, props.kind));
     return h("span", { style: Object.assign({
       display: "inline-block", fontSize: "0.64rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em",
       padding: "0.14rem 0.5rem", borderRadius: "999px", whiteSpace: "nowrap" }, ch) }, props.label);
@@ -110,9 +117,14 @@
   }
 
   function Section(props) {
-    return h("div", { className: "brf-fade-in", style: { marginBottom: "1rem" } },
-      h("div", { style: { fontSize: "0.7rem", letterSpacing: "0.08em", textTransform: "uppercase", color: MUTED, marginBottom: "0.4rem" } }, props.title),
-      props.children);
+    var s = useState(props.defaultCollapsed ? false : true);
+    var open = s[0], setOpen = s[1];
+    return h("div", { className: "brf-fade-in", style: { marginBottom: "0.6rem", border: "1px solid var(--color-border)", borderRadius: "0.6rem", background: "var(--color-card)", overflow: "hidden" } },
+      h("div", { onClick: function () { setOpen(!open); },
+        style: { display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer", userSelect: "none", padding: "0.5rem 0.7rem" } },
+        h("span", { style: { display: "inline-block", fontSize: "0.62rem", color: MUTED, transition: "transform .2s ease", transform: open ? "rotate(90deg)" : "rotate(0deg)" } }, "\u25B6"),
+        h("span", { style: { flex: 1, fontSize: "0.72rem", letterSpacing: "0.08em", textTransform: "uppercase", color: MUTED, fontWeight: 600 } }, props.title)),
+      open ? h("div", { style: { padding: "0 0.7rem 0.65rem" } }, props.children) : null);
   }
 
   function Skeleton() {
@@ -170,7 +182,7 @@
         border: "1px solid var(--color-border)", borderRadius: "var(--radius, 0.5rem)",
         padding: "0.6rem 0.75rem", marginBottom: "0.5rem", background: "var(--color-card)" } },
       h("div", { style: { display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.25rem" } },
-        h(StatusBadge, { kind: d.kind, label: KIND_LABEL[d.kind] || d.kind }),
+        h(StatusBadge, { kind: d.kind, status: d.status, label: KIND_LABEL[d.kind] || d.kind }),
         h("strong", { style: { fontSize: "0.9rem" } }, d.title)),
       d.detail ? h("div", { style: { fontSize: "0.8rem", color: MUTED, marginBottom: "0.4rem" } }, d.detail) : null,
       h("div", { style: { display: "flex", gap: "0.6rem", alignItems: "center" } },
@@ -254,7 +266,7 @@
           groups[b].map(function (it, i) {
             var why = (it.bullets && it.bullets[0]) || it.why || "";
             var t = ticketHref(it.task_id, props.target);
-            return h("div", { key: i, className: "brf-card", style: { display: "flex", flexDirection: "column", border: "1px solid var(--color-border)", borderLeft: "3px solid " + statusColor("done"), borderRadius: "0.55rem", padding: "0.6rem 0.75rem", background: "var(--color-card)" } },
+            return h("div", { key: i, className: "brf-card", style: { display: "flex", flexDirection: "column", border: "1px solid var(--color-border)", borderLeft: "3px solid " + resolveColor(it.status, "done"), borderRadius: "0.55rem", padding: "0.6rem 0.75rem", background: "var(--color-card)" } },
               h("div", { style: { fontSize: "0.86rem", fontWeight: 600, lineHeight: 1.35, marginBottom: why ? "0.35rem" : "0.4rem" } }, it.title),
               why ? h("div", { style: { fontSize: "0.78rem", color: MUTED, lineHeight: 1.5, marginBottom: "0.5rem", display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" } }, why) : null,
               it.task_id ? h("a", { href: t.url, style: { marginTop: "auto", alignSelf: "flex-start", fontSize: "0.74rem", fontWeight: 600, textDecoration: "none", color: "inherit", border: "1px solid var(--color-border)", borderRadius: "0.4rem", padding: "0.1rem 0.5rem" } }, "Open ticket \u2192") : null);
@@ -288,7 +300,7 @@
             h("div", { style: { display: "flex", flexWrap: "wrap", gap: "0.35rem" } },
               digest.in_progress.map(function (t, i) {
                 var th = ticketHref(t.task_id, props.target);
-                var ach = colorChrome(statusColor("active"));
+                var ach = colorChrome(resolveColor(t.status, "active"));
                 return h("a", { key: i, href: th.url, style: Object.assign({ fontSize: "0.78rem", textDecoration: "none", padding: "0.15rem 0.5rem", borderRadius: "999px" }, ach) }, t.title); })))
         : null,
       (digest.learned && digest.learned.length)
