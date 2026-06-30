@@ -427,7 +427,7 @@ def _to_epoch(v: Any) -> int:
         return 0
 
 
-_BOARD_SEP = "\x1f"  # namespaces task ids per board so ids never collide across boards
+_BOARD_SEP = "::"  # namespaces task ids per board so ids never collide across boards
 
 
 class _BoardSource:
@@ -652,6 +652,28 @@ class _BoardSource:
         c = self._cols.get("runs", {})
         return bool(c.get("run_in_tok") or c.get("run_out_tok") or c.get("run_cost"))
 
+    def event_ts_bounds(self) -> "tuple[int, int] | None":
+        """(earliest, latest) event epoch in this board, or None if no events."""
+        self.connect()
+        ts = self._cols.get("events", {}).get("event_ts")
+        if not ts:
+            return None
+        try:
+            if self._ts_is_text(ts):
+                rows = self._conn.execute(
+                    f'SELECT "{ts}" FROM {self._events_table} WHERE "{ts}" IS NOT NULL'
+                ).fetchall()
+                vals = [_to_epoch(r[0]) for r in rows]
+                return (min(vals), max(vals)) if vals else None
+            row = self._conn.execute(
+                f'SELECT MIN("{ts}"), MAX("{ts}") FROM {self._events_table}'
+            ).fetchone()
+            if row and row[0] is not None:
+                return (_to_epoch(row[0]), _to_epoch(row[1]))
+        except Exception:
+            return None
+        return None
+
     def close(self) -> None:
         if self._conn:
             self._conn.close()
@@ -770,6 +792,18 @@ class KanbanSource:
 
     def board_slugs(self) -> list[str]:
         return [s.slug for s in self._sources]
+
+    def history_bounds(self) -> "tuple[int | None, int | None]":
+        mn = mx = None
+        for s in self._sources:
+            try:
+                b = s.event_ts_bounds()
+            except Exception:
+                b = None
+            if b:
+                mn = b[0] if mn is None else min(mn, b[0])
+                mx = b[1] if mx is None else max(mx, b[1])
+        return (mn, mx)
 
     def close(self) -> None:
         for s in self._sources:
@@ -1884,6 +1918,25 @@ if router is not None:
         finally:
             src.close()
         return {"boards": ["all"] + slugs}
+
+    @router.get("/history")
+    def history(board: str = "all"):
+        """Earliest/latest activity across the (selected) boards, so the UI can
+        span reports over the whole history instead of only the last few days."""
+        cfg = load_config()
+        src = KanbanSource(cfg, None if board in (None, "", "all") else board)
+        try:
+            mn, mx = src.history_bounds()
+        finally:
+            src.close()
+        if not mn:
+            today = today_str(cfg.timezone)
+            return {"first_date": today, "last_date": today, "days": 1}
+        z = _safe_zoneinfo(cfg.timezone)
+        fd = datetime.fromtimestamp(mn, z).strftime("%Y-%m-%d")
+        ld = datetime.fromtimestamp(mx, z).strftime("%Y-%m-%d")
+        span = (datetime.strptime(ld, "%Y-%m-%d") - datetime.strptime(fd, "%Y-%m-%d")).days + 1
+        return {"first_date": fd, "last_date": ld, "days": span}
 
     # NOTE: these are sync `def` on purpose — FastAPI runs them in a threadpool,
     # so building (which is blocking) never stalls the dashboard event loop.

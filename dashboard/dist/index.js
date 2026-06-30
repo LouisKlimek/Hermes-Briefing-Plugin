@@ -101,8 +101,34 @@
     }, props.label);
   }
 
+  // Where a ticket opens. If the Hermes TaskList plugin is installed we deep-link
+  // to its tab (opens the task popup); otherwise we fall back to the Kanban board.
+  // Detected at runtime via /api/dashboard/plugins, so this works standalone too.
+  function ticketHref(taskId, target) {
+    var ns = taskId || "";
+    var i = ns.indexOf("::");
+    var localId = i >= 0 ? ns.slice(i + 2) : ns;
+    var board = i >= 0 ? ns.slice(0, i) : "";
+    var root = (window.location.pathname || "").replace(/\/briefing(\/.*)?$/, "");
+    var path = (target && target.path) || "/kanban";
+    var url = root + path + (localId ? "?task=" + encodeURIComponent(localId) : "");
+    if (localId && board) url += "&board=" + encodeURIComponent(board);
+    return { url: url, localId: localId, board: board, kind: (target && target.kind) || "kanban" };
+  }
+  function detectTicketTarget(fetchJSON) {
+    return fetchJSON("/api/dashboard/plugins").then(function (list) {
+      list = Array.isArray(list) ? list : (list && list.plugins) || [];
+      function find(n) { return list.filter(function (p) { return p && p.name === n; })[0]; }
+      var tl = find("tasklist");
+      if (tl) return { path: (tl.tab && tl.tab.path) || "/list", kind: "tasklist" };
+      var kb = find("kanban");
+      return { path: (kb && kb.tab && kb.tab.path) || "/kanban", kind: "kanban" };
+    }).catch(function () { return { path: "/kanban", kind: "kanban" }; });
+  }
+
   function HandItem(props) {
-    var d = props.d, onResolve = props.onResolve, busy = props.busy;
+    var d = props.d;
+    var t = ticketHref(d.task_id, props.target);
     return h("div", { className: "brf-card brf-fade-in", style: {
         border: "1px solid var(--color-border)", borderRadius: "var(--radius, 0.5rem)",
         padding: "0.6rem 0.75rem", marginBottom: "0.5rem", background: "var(--color-card)" } },
@@ -110,12 +136,16 @@
         Badge ? h(Badge, { variant: KIND_TONE[d.kind] || "default" }, KIND_LABEL[d.kind] || d.kind) : null,
         h("strong", { style: { fontSize: "0.9rem" } }, d.title)),
       d.detail ? h("div", { style: { fontSize: "0.8rem", color: MUTED, marginBottom: "0.4rem" } }, d.detail) : null,
-      h("div", { style: { display: "flex", gap: "0.4rem", alignItems: "center" } },
-        Button ? [
-          h(Button, { key: "ok", size: "sm", disabled: busy, onClick: function () { onResolve(d.id, "ok"); } }, "Give OK"),
-          h(Button, { key: "veto", size: "sm", variant: "destructive", disabled: busy, onClick: function () { onResolve(d.id, "veto"); } }, "Veto")
-        ] : null,
-        busy ? h(Spinner) : null));
+      h("div", { style: { display: "flex", gap: "0.6rem", alignItems: "center" } },
+        h("a", { href: t.url,
+                 style: { fontSize: "0.8rem", fontWeight: 600, textDecoration: "none",
+                          border: "1px solid var(--color-border)", borderRadius: "0.4rem",
+                          padding: "0.2rem 0.6rem", color: "inherit", background: "var(--color-card)" } },
+          "Open ticket \u2192"),
+        (t.board || t.localId)
+          ? h("span", { style: { fontSize: "0.72rem", color: MUTED } },
+              (t.board ? t.board + " · " : "") + t.localId)
+          : null));
   }
 
   function MiniBars(props) {
@@ -143,15 +173,17 @@
         digest.generated_at ? h("span", { style: { fontSize: "0.72rem", color: MUTED } }, "built " + timeAgo(digest.generated_at)) : null),
 
       (digest.hand && digest.hand.length)
-        ? h(Section, { title: "Needs your call" }, digest.hand.map(function (d) { return h(HandItem, { key: d.id, d: d, onResolve: props.onResolve, busy: props.busyId === d.id }); }))
+        ? h(Section, { title: "Needs your call" }, digest.hand.map(function (d) { return h(HandItem, { key: d.id, d: d, target: props.target }); }))
         : h(Section, { title: "Needs your call" }, h("div", { style: { fontSize: "0.82rem", color: MUTED } }, "Nothing open.")),
 
       Separator ? h(Separator, { style: { margin: "0.5rem 0" } }) : null,
 
       (digest.done && digest.done.length)
-        ? h(Section, { title: "Done today" }, digest.done.map(function (it, i) {
+        ? h(Section, { title: "Done (" + digest.done.length + ")" }, digest.done.map(function (it, i) {
             var b = (it.bullets && it.bullets[0]) || it.why || "done";
-            return h("div", { key: i, style: { fontSize: "0.84rem", marginBottom: "0.25rem" } }, h("strong", null, it.title), " \u2014 ", b); }))
+            return h("div", { key: i, className: "brf-card", style: { border: "1px solid var(--color-border)", borderRadius: "0.45rem", padding: "0.4rem 0.6rem", marginBottom: "0.35rem", background: "var(--color-card)" } },
+              h("div", { style: { fontSize: "0.85rem", fontWeight: 600 } }, it.title),
+              b ? h("div", { style: { fontSize: "0.78rem", color: MUTED, marginTop: "0.1rem" } }, b) : null); }))
         : null,
       (digest.in_progress && digest.in_progress.length)
         ? h(Section, { title: "Active" }, h("div", { style: { fontSize: "0.84rem" } }, digest.in_progress.map(function (t) { return t.title; }).join(", ")))
@@ -175,13 +207,21 @@
       h("div", { style: { display: "flex", gap: "1.5rem", flexWrap: "wrap", marginBottom: "0.4rem" } },
         stat("Cost", eur(r.cost_eur)),
         stat("Done", (r.done ? r.done.length : 0) + " tasks"),
+        stat("Still open", (r.hand ? r.hand.length : 0) + ""),
         stat("Decisions", (st.total || 0) + " \u00b7 " + (st.vetoed || 0) + " vetoed \u00b7 " + (st.open || 0) + " open")),
-      (r.days && r.days.length) ? h(Section, { title: "Daily cost" }, h(MiniBars, { rows: r.days, field: "cost" })) : null,
+      (r.days && r.days.length) ? h("div", { style: { display: "flex", gap: "1.5rem", flexWrap: "wrap" } },
+        h("div", { style: { flex: "1 1 220px" } }, h(Section, { title: "Done per day" }, h(MiniBars, { rows: r.days, field: "done" }))),
+        h("div", { style: { flex: "1 1 220px" } }, h(Section, { title: "Daily cost" }, h(MiniBars, { rows: r.days, field: "cost" })))) : null,
       (r.hand && r.hand.length) ? h(Section, { title: "Still open" }, r.hand.map(function (d, i) {
-          return h("div", { key: i, style: { fontSize: "0.84rem", marginBottom: "0.2rem" } }, "\u2022 " + d.title); })) : null,
-      (r.done && r.done.length) ? h(Section, { title: "Done" }, r.done.slice(0, 25).map(function (it, i) {
+          var t = ticketHref(d.task_id, props.target);
+          return h("div", { key: i, style: { fontSize: "0.84rem", marginBottom: "0.2rem" } }, "\u2022 ",
+            h("a", { href: t.url, style: { color: "inherit", textDecoration: "underline", textUnderlineOffset: "2px" } }, d.title)); })) : null,
+      (r.done && r.done.length) ? h(Section, { title: "Done (" + r.done.length + ")" }, r.done.slice(0, 80).map(function (it, i) {
           var b = (it.bullets && it.bullets[0]) || it.why || "done";
-          return h("div", { key: i, style: { fontSize: "0.84rem", marginBottom: "0.2rem" } }, h("strong", null, it.title), " \u2014 ", b); })) : null,
+          return h("div", { key: i, className: "brf-card", style: { border: "1px solid var(--color-border)", borderRadius: "0.45rem", padding: "0.4rem 0.6rem", marginBottom: "0.35rem", background: "var(--color-card)" } },
+            h("div", { style: { fontSize: "0.85rem", fontWeight: 600 } }, it.title),
+            b ? h("div", { style: { fontSize: "0.78rem", color: MUTED, marginTop: "0.1rem" } }, b) : null); }))
+        : h(Section, { title: "Done" }, h("div", { style: { fontSize: "0.82rem", color: MUTED } }, "Nothing recorded in this range.")),
       (r.learned && r.learned.length) ? h(Section, { title: "Learned" }, r.learned.map(function (l, i) {
           return h("div", { key: i, style: { fontSize: "0.82rem", marginBottom: "0.2rem" } }, "\u2022 " + l); })) : null);
     function stat(label, val) {
@@ -229,6 +269,10 @@
     var sBoards = useState(["all"]); var boards = sBoards[0], setBoards = sBoards[1];
     var sBoard = useState("all"); var board = sBoard[0], setBoard = sBoard[1];
     var boardRef = useRef("all"); boardRef.current = board;
+    var sTB = useState({ path: "/kanban", kind: "kanban" }); var ticketBase = sTB[0], setTicketBase = sTB[1];
+    var sHist = useState(null); var historyFirst = sHist[0], setHistoryFirst = sHist[1];
+    var sMonth = useState(null); var monthCursor = sMonth[0], setMonthCursor = sMonth[1];
+    var monthRef = useRef(null); monthRef.current = monthCursor;
     var tzRef = useRef(tz); tzRef.current = tz;
     var dateRef = useRef(null); dateRef.current = date;
     var building = !!(status && status.build && status.build.running);
@@ -246,13 +290,30 @@
         .catch(function () { setDigest(null); }).then(function (r) { setDayLoading(false); return r; });
     }, []);
 
+    var loadHistoryAndEnsure = useCallback(function (b) {
+      return fetchJSON(addBoard(apiRef.current + "/history", b)).then(function (hr) {
+        var first = hr && hr.first_date ? hr.first_date : null;
+        setHistoryFirst(first);
+        var span = 14;
+        if (first) {
+          var d0 = new Date(first + "T00:00:00"), now = new Date();
+          span = Math.min(370, Math.max(7, Math.round((now - d0) / 86400000) + 1));
+        }
+        return fetchJSON(addBoard(apiRef.current + "/ensure?days=" + span, b))
+          .then(function () { loadList(); }).catch(function () {});
+      }).catch(function () {
+        return fetchJSON(addBoard(apiRef.current + "/ensure?days=14", b))
+          .then(function () { loadList(); }).catch(function () {});
+      });
+    }, []);
+
     function init() {
       fetchJSON(apiRef.current + "/status").then(function (st) {
         setStatus(st); if (st && st.timezone) setTz(st.timezone);
       }).catch(function () {});
       loadDay("today").then(function (r) { if (r && r.date) setDate(r.date); });
       loadList();
-      fetchJSON(addBoard(apiRef.current + "/ensure?days=7", boardRef.current)).then(function () { loadList(); }).catch(function () {});
+      loadHistoryAndEnsure(boardRef.current);
     }
 
     // resolve which /api/plugins/<dir> base actually answers, THEN load
@@ -260,6 +321,7 @@
       resolveApi().then(function (base) {
         apiRef.current = base; setApiBase(base);
         fetchJSON(base + "/boards").then(function (r) { if (r && r.boards && r.boards.length) setBoards(r.boards); }).catch(function () {});
+        detectTicketTarget(fetchJSON).then(setTicketBase);
         init();
       });
     }, []);
@@ -281,20 +343,39 @@
     var loadRange = useCallback(function (kind) {
       setRangeLoading(true); setRoll(null);
       var t = tzRef.current;
-      var to = ymd(new Date(), t);
-      var from = kind === "month" ? to.slice(0, 8) + "01" : ymd(daysAgo(6), t);
+      var to = ymd(new Date(), t), from;
+      if (kind === "month") {
+        var mc = monthRef.current || (to.slice(0, 8) + "01");
+        from = mc;
+        var y = +mc.slice(0, 4), m = +mc.slice(5, 7);
+        var lastDay = new Date(y, m, 0).getDate();
+        var monthEnd = mc.slice(0, 8) + ("0" + lastDay).slice(-2);
+        to = monthEnd > to ? to : monthEnd;   // cap current month at today
+      } else {
+        from = ymd(daysAgo(6), t);
+      }
       return fetchJSON(addBoard(apiRef.current + "/range?from_=" + from + "&to=" + to, boardRef.current))
         .then(function (r) { setRoll(r); }).catch(function () { setRoll(null); })
         .then(function () { setRangeLoading(false); });
     }, []);
 
+    function shiftMonth(delta) {
+      var base = monthRef.current || (ymd(new Date(), tzRef.current).slice(0, 8) + "01");
+      var y = +base.slice(0, 4), m = +base.slice(5, 7) + delta;
+      while (m < 1) { m += 12; y--; }
+      while (m > 12) { m -= 12; y++; }
+      var nc = y + "-" + ("0" + m).slice(-2) + "-01";
+      setMonthCursor(nc); monthRef.current = nc;
+      loadRange("month");
+    }
+
     function changeBoard(b) {
       setBoard(b); boardRef.current = b;
-      setDigest(null); setRoll(null); setBuilt({});
+      setDigest(null); setRoll(null); setBuilt({}); setHistoryFirst(null);
+      loadHistoryAndEnsure(b);
       if (tab === "day") {
         loadDay(date || "today").then(function (r) { if (r && r.date) setDate(r.date); });
         loadList();
-        fetchJSON(addBoard(apiRef.current + "/ensure?days=7", b)).then(function () { loadList(); }).catch(function () {});
       } else {
         loadRange(tab);
       }
@@ -303,8 +384,13 @@
     function switchTab(t) {
       setTab(t);
       if (t === "week") loadRange("week");
-      else if (t === "month") loadRange("month");
-      else if (t === "day" && !digest && date) loadDay(date);
+      else if (t === "month") {
+        if (!monthRef.current) {
+          var cm = ymd(new Date(), tzRef.current).slice(0, 8) + "01";
+          setMonthCursor(cm); monthRef.current = cm;
+        }
+        loadRange("month");
+      } else if (t === "day" && !digest && date) loadDay(date);
     }
 
     function rebuild() {
@@ -321,32 +407,49 @@
         .then(function (r) { setDigest(r); }).catch(function () {}).then(function () { setBusyId(""); });
     }
 
-    // ---- day sidebar: last 14 days (client-computed), badges from built map ----
+    // ---- day sidebar: spans the full history (client-computed) ----
+    var spanDays = 14;
+    if (historyFirst) {
+      var hd0 = new Date(historyFirst + "T00:00:00"), nowd = new Date();
+      spanDays = Math.min(200, Math.max(14, Math.round((nowd - hd0) / 86400000) + 1));
+    }
     var dayList = [];
-    for (var i = 0; i < 14; i++) dayList.push(ymd(daysAgo(i), tz));
+    for (var i = 0; i < spanDays; i++) dayList.push(ymd(daysAgo(i), tz));
 
     var sidebar = h("div", { style: { width: "150px", flex: "0 0 150px", borderRight: "1px solid var(--color-border)", paddingRight: "0.6rem", overflowY: "auto", maxHeight: "68vh" } },
       dayList.map(function (d, idx) {
         var active = d === date, b = built[d];
+        var hasDone = b && (b.done || 0) > 0, hasOpen = b && (b.open || 0) > 0;
         return h("div", { key: d, onClick: function () { setDate(d); }, className: "brf-card",
           style: { cursor: "pointer", padding: "0.35rem 0.5rem", borderRadius: "0.4rem", marginBottom: "0.2rem", fontSize: "0.8rem",
             background: active ? "var(--color-accent)" : "transparent", color: active ? "var(--color-accent-foreground)" : "inherit" } },
           h("div", { style: { fontWeight: 600 } }, idx === 0 ? "Today" : idx === 1 ? "Yesterday" : d.slice(5)),
           h("div", { style: { fontSize: "0.68rem", color: active ? "inherit" : MUTED } },
-            b ? ((b.open || 0) + " open \u00b7 " + eur(b.cost_eur)) : (building ? "building\u2026" : "\u2014")));
+            b ? ((b.done || 0) + " done" + (hasOpen ? " \u00b7 " + b.open + " open" : "")) : (building ? "building\u2026" : "\u2014")));
       }));
 
     var dayBody;
     if (dayLoading && !digest) dayBody = h(Skeleton);
     else if (!digest) dayBody = h("div", { style: { paddingLeft: "1rem", color: MUTED, fontSize: "0.85rem" } }, "No briefing.");
-    else dayBody = h(DigestView, { digest: digest, building: dayLoading || building, onRebuild: rebuild, onResolve: resolve, busyId: busyId });
+    else dayBody = h(DigestView, { digest: digest, building: dayLoading || building, onRebuild: rebuild, target: ticketBase });
 
     var content;
     if (tab === "day") {
       content = h("div", { style: { display: "flex", gap: "0.5rem" } }, sidebar, dayBody);
     } else {
-      if (rangeLoading || !roll) content = h(Skeleton);
-      else content = h(RangeView, { roll: roll, title: tab === "month" ? "This month" : "Last 7 days" });
+      var rangeBody = (rangeLoading || !roll) ? h(Skeleton)
+        : h(RangeView, { roll: roll, title: tab === "month" ? "Month" : "Last 7 days", target: ticketBase });
+      var nav = null;
+      if (tab === "month") {
+        var curMonth = ymd(new Date(), tz).slice(0, 7);
+        var shown = (monthCursor || (curMonth + "-01")).slice(0, 7);
+        var atCurrent = shown >= curMonth;
+        nav = h("div", { style: { display: "flex", alignItems: "center", gap: "0.6rem", marginBottom: "0.5rem" } },
+          Button ? h(Button, { size: "sm", variant: "secondary", onClick: function () { shiftMonth(-1); } }, "\u2190 Prev") : null,
+          h("strong", { style: { fontSize: "0.95rem", minWidth: "5.5rem", textAlign: "center" } }, shown),
+          Button ? h(Button, { size: "sm", variant: "secondary", disabled: atCurrent, onClick: function () { if (!atCurrent) shiftMonth(1); } }, "Next \u2192") : null);
+      }
+      content = h("div", null, nav, rangeBody);
     }
 
     if (!apiBase) {
