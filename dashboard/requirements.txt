@@ -3,3 +3,4 @@
 # Listed only for running the CLI / send_report.py in a bare venv:
 fastapi>=0.110
 PyYAML>=6.0
+tzdata  # provides IANA tz database for zoneinfo on slim images

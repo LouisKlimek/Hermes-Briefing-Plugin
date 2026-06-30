@@ -58,6 +58,7 @@ What gets escalated is pure, auditable event-type logic. The LLM is a compressor
 - **Zero runtime dependencies** — reads the board read-only (WAL-safe), talks to any OpenAI-compatible or Anthropic endpoint via stdlib only.
 - **Day / Week / Month tabs** — switch timeframes inline; the daily view has a 14-day picker, week/month are rolled-up views. Everything renders in the dashboard, nothing to download.
 - **Instant, zero-setup first run** — opening the tab builds today on demand and shows it right away (animated), then fills in recent days in the background. A live status bar shows background builds and the next scheduled run.
+- **Schema-agnostic activity detection** — reconstructs each day from the kanban event log without hard-coding event names. Any event is mapped to a canonical bucket (done / blocked / failed / active) by matching the event `kind` *and* status fields in its JSON payload (`to`, `status`, `column`, …), so renamed or future board schemas keep working. Past days are filled from when statuses were actually set, even after every ticket is already done.
 - **GET-only data path** — builds, rebuilds and decision resolves all work over GET, so it stays reliable even on Hermes builds whose `fetchJSON` doesn't forward POST options.
 - **English by default** — set `language: de` for the original German labels. Verbatim agent text (block reasons, summaries) is always shown as the agent wrote it.
 - **Works without the dashboard** — a standalone CLI prints any day's briefing; email it with the bundled systemd timer.

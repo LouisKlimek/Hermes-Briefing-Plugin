@@ -33,6 +33,27 @@ try:
 except Exception:
     yaml = None
 
+# Best-effort: ship the IANA tz database so zoneinfo works even on slim images
+# that lack the system tzdata package. No-op if not installed.
+try:
+    import tzdata  # noqa: F401
+except Exception:
+    pass
+
+
+def _safe_zoneinfo(name: str):
+    """ZoneInfo(name) but never raises — falls back to UTC if the tz DB is
+    missing (slim containers without system tzdata). Keeps the plugin working
+    on a bare server; times are then UTC instead of the configured zone."""
+    try:
+        return ZoneInfo(name)
+    except Exception:
+        try:
+            return ZoneInfo("UTC")
+        except Exception:
+            return timezone.utc
+
+
 try:
     from fastapi import APIRouter, Body, HTTPException
     from fastapi.responses import PlainTextResponse, JSONResponse
@@ -294,6 +315,95 @@ class Task:
     tenant: str
     priority: Any
     created: int
+
+
+# --------------------------------------------------------------------------- #
+# schema-agnostic status classification
+#
+# We never hard-code a board's exact event names. Any event/status is mapped to
+# a canonical bucket (done / blocked / failed / active / todo) by keyword-
+# matching BOTH the event `kind` and any status-like field in its JSON payload.
+# Renamed or future schemas keep working as long as the words resemble normal
+# status vocabulary; unrecognised events simply yield no bucket and are ignored
+# rather than breaking the report.
+# --------------------------------------------------------------------------- #
+_FAIL_WORDS = ("fail", "gave_up", "giveup", "give_up", "timed_out", "timeout",
+               "abort", "crash", "cancel", "reject", "spawn_failed", "error")
+_BLOCK_WORDS = ("block", "review", "approv", "wait", "hold", "stuck")
+_DONE_WORDS = ("done", "complete", "finish", "close", "resolve", "merg",
+               "ship", "deploy", "archiv", "success", "succeed")
+_ACTIVE_WORDS = ("run", "progress", "doing", "claim", "start", "active",
+                 "working", "spawn")
+_TODO_WORDS = ("todo", "ready", "backlog", "open", "new", "queue", "pending", "draft")
+
+_STATUS_FIELDS = ("to", "to_status", "to_state", "new_status", "new_state",
+                  "to_column", "to_lane", "status", "state", "column", "lane",
+                  "stage", "phase", "value")
+
+_TEXT_FIELDS = ("summary", "reason", "message", "detail", "note", "comment",
+                "body", "text", "description", "result", "output", "error")
+
+
+def _canon(s: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "_", str(s or "").strip().lower()).strip("_")
+
+
+def _bucket_of(token: Any) -> Optional[str]:
+    """Map one status/kind token to a canonical bucket, or None if unknown.
+
+    Order matters: a clearing (unblock/resume) reads as active, and failure /
+    blocked are checked before done/active so 'review' or 'failed' never reads
+    as 'done'."""
+    t = _canon(token)
+    if not t:
+        return None
+    if "unblock" in t or "unhold" in t or "resume" in t or "reopen" in t:
+        return "active"
+    if any(w in t for w in _FAIL_WORDS):
+        return "failed"
+    if any(w in t for w in _BLOCK_WORDS):
+        return "blocked"
+    if any(w in t for w in _DONE_WORDS):
+        return "done"
+    if any(w in t for w in _ACTIVE_WORDS):
+        return "active"
+    if any(w in t for w in _TODO_WORDS):
+        return "todo"
+    return None
+
+
+def _bucket_ev(kind: Any, data: Any) -> Optional[str]:
+    """Canonical transition for an event: prefer an explicit status-like field
+    in the payload (the real transition target), else read the kind as a verb."""
+    d = data if isinstance(data, dict) else {}
+    for f in _STATUS_FIELDS:
+        v = d.get(f)
+        if v not in (None, "", [], {}):
+            b = _bucket_of(v)
+            if b:
+                return b
+    return _bucket_of(kind)
+
+
+def event_bucket(e: "Event") -> Optional[str]:
+    return _bucket_ev(e.kind, e.data)
+
+
+def _any_text(d: Any, extra: tuple = ()) -> str:
+    """Most informative human string from a payload, schema-agnostic."""
+    if isinstance(d, str):
+        return d
+    if not isinstance(d, dict):
+        return str(d or "")
+    for k in _TEXT_FIELDS + extra:
+        v = d.get(k)
+        if isinstance(v, str) and v.strip():
+            return v
+    best = ""
+    for v in d.values():
+        if isinstance(v, str) and len(v) > len(best):
+            best = v
+    return best
 
 
 def _to_epoch(v: Any) -> int:
@@ -894,11 +1004,11 @@ class Store:
             t = tasks.get(d.get("task_id"))
             if not t:
                 continue
-            st = (t.status or "").lower()
-            if st in ("done", "archived"):
+            sb = _bucket_of(t.status)
+            if sb == "done":
                 if self.resolve_decision(d["id"], "auto-done"):
                     closed += 1
-            elif st in ("running", "ready", "todo") and d["kind"] in ("approval", "blocked", "failed"):
+            elif sb in ("active", "todo") and d["kind"] in ("approval", "blocked", "failed"):
                 if self.resolve_decision(d["id"], "auto-cleared"):
                     closed += 1
         return closed
@@ -925,11 +1035,7 @@ _FAILED_KINDS = {"gave_up", "timed_out"}
 
 
 def _reason_text(e: Event) -> str:
-    d = e.data or {}
-    for k in ("reason", "error", "message", "summary", "detail"):
-        if d.get(k):
-            return str(d[k])
-    return ""
+    return _any_text(e.data or {})
 
 
 def _is_approval(reason: str, cfg: Config) -> bool:
@@ -957,8 +1063,9 @@ def escalate(events: list[Event], tasks: dict, cfg: Config) -> list[dict]:
     for e in events:
         t = tasks.get(e.task_id)
         task_title = t.title if t else e.task_id
+        b = event_bucket(e)
 
-        if e.kind == "blocked":
+        if e.kind == "blocked" or b == "blocked":
             reason = _reason_text(e)
             if _is_approval(reason, cfg):
                 key = f"{e.task_id}:approval"
@@ -974,7 +1081,7 @@ def escalate(events: list[Event], tasks: dict, cfg: Config) -> list[dict]:
                     "title": task_title, "detail": _short(reason, 280), "deadline": None,
                 }
 
-        elif e.kind in _FAILED_KINDS:
+        elif e.kind in _FAILED_KINDS or b == "failed":
             key = f"{e.task_id}:failed"
             default_detail = ("Gave up after retries." if cfg.language != "de"
                               else "Endgültig fehlgeschlagen nach Retries.")
@@ -1038,32 +1145,30 @@ def _sys(lang: str) -> str:
     )
 
 
-def _last_text(bundle: dict, kinds: tuple[str, ...]) -> str:
+def _last_text(bundle: dict, buckets: tuple[str, ...]) -> str:
     for ev in reversed(bundle.get("events", [])):
-        if ev.get("kind") in kinds:
-            d = ev.get("data") or {}
-            for k in ("summary", "reason", "error", "message"):
-                if d.get(k):
-                    return str(d[k])
-    # try runs
+        if _bucket_ev(ev.get("kind"), ev.get("data")) in buckets:
+            t = _any_text(ev.get("data") or {})
+            if t:
+                return t
     for r in bundle.get("runs", []):
-        for k in ("summary", "error"):
-            if r.get(k):
-                return str(r[k])
+        t = _any_text(r, extra=("stdout", "log"))
+        if t:
+            return t
     return ""
 
 
 def _fallback(bundle: dict, lang: str = "en") -> dict:
-    kinds = [e.get("kind") for e in bundle.get("events", [])]
-    done = "completed" in kinds
-    blocked = "blocked" in kinds
-    failed = any(k in kinds for k in ("gave_up", "timed_out"))
+    buckets = [_bucket_ev(e.get("kind"), e.get("data")) for e in bundle.get("events", [])]
+    done = "done" in buckets
+    blocked = "blocked" in buckets
+    failed = "failed" in buckets
     words = ({"done": "fertig", "gave up": "aufgegeben", "blocked": "blockiert", "wip": "in Arbeit"}
              if lang == "de" else
              {"done": "done", "gave up": "gave up", "blocked": "blocked", "wip": "in progress"})
     outcome = words["done"] if done else words["gave up"] if failed else words["blocked"] if blocked else words["wip"]
-    why = _last_text(bundle, ("completed",)) if done else \
-          _last_text(bundle, ("blocked", "gave_up", "timed_out"))
+    why = _last_text(bundle, ("done",)) if done else \
+          _last_text(bundle, ("blocked", "failed"))
     why = " ".join(why.split())
     if len(why) > 140:
         why = why[:139] + "…"
@@ -1079,11 +1184,10 @@ def _fallback(bundle: dict, lang: str = "en") -> dict:
 def _compact_bundle(bundle: dict) -> str:
     lines = []
     for ev in bundle.get("events", [])[-12:]:
-        d = ev.get("data") or {}
-        bit = d.get("summary") or d.get("reason") or d.get("error") or ""
+        bit = _any_text(ev.get("data") or {})
         lines.append(f"- {ev.get('kind')}: {str(bit)[:240]}")
     for c in bundle.get("comments", [])[-2:]:
-        body = c.get("body") or c.get("text") or c.get("content") or ""
+        body = _any_text(c)
         if body:
             lines.append(f"- comment: {str(body)[:240]}")
     return "\n".join(lines) or "(keine Details)"
@@ -1182,7 +1286,6 @@ from zoneinfo import ZoneInfo
 
 _ERROR_KINDS = {"protocol_violation", "crashed", "spawn_failed", "timed_out", "gave_up"}
 _DONE_KINDS = {"completed"}
-_ACTIVE_STATUS = {"running", "ready", "claimed", "todo"}
 
 _STATUS_WORD = {"en": {"active": "active", "quiet": "quiet"},
                 "de": {"active": "läuft", "quiet": "ruhig"}}
@@ -1193,7 +1296,7 @@ _CAVEAT = {
 
 
 def day_bounds(date_str: str, tz: str) -> tuple[int, int, datetime]:
-    z = ZoneInfo(tz)
+    z = _safe_zoneinfo(tz)
     d = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=z)
     start = d.replace(hour=0, minute=0, second=0, microsecond=0)
     end = start + timedelta(days=1)
@@ -1201,13 +1304,27 @@ def day_bounds(date_str: str, tz: str) -> tuple[int, int, datetime]:
 
 
 def today_str(tz: str) -> str:
-    return datetime.now(ZoneInfo(tz)).strftime("%Y-%m-%d")
+    return datetime.now(_safe_zoneinfo(tz)).strftime("%Y-%m-%d")
 
 
 def _month_start_ts(date_str: str, tz: str) -> int:
-    z = ZoneInfo(tz)
+    z = _safe_zoneinfo(tz)
     d = datetime.strptime(date_str, "%Y-%m-%d").replace(tzinfo=z, day=1, hour=0, minute=0, second=0)
     return int(d.timestamp())
+
+
+def _final_bucket(task_id: str, events: list) -> Optional[str]:
+    """The last determinable status bucket for a task within the given events
+    (events come ordered oldest->newest). Lets us tell whether an escalated task
+    was still blocked at end of day or got resolved during it."""
+    last = None
+    for e in events:
+        if e.task_id != task_id:
+            continue
+        b = event_bucket(e)
+        if b:
+            last = b
+    return last
 
 
 def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = True) -> dict:
@@ -1222,14 +1339,31 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = 
         events = src.fetch_events(start_ts, end_ts)
         tasks = src.fetch_tasks()  # snapshot of current statuses
 
-        # 1) deterministic escalation -> persistent decisions, then reconcile
-        for d in escalate(events, tasks, cfg):
+        # 1) escalation. Persist to the live decision store (for the current
+        #    "what's open now" view), but the per-day report is a HISTORICAL
+        #    record: `hand` = what was escalated THAT day, even if the task has
+        #    since been resolved. Today additionally carries over anything still
+        #    open from earlier days.
+        day_esc = escalate(events, tasks, cfg)
+        for d in day_esc:
             store.upsert_decision(d)
         store.reconcile_decisions(tasks)
-        hand = store.open_decisions()
 
-        # 2) completed today -> AI/heuristic summary
-        done_ids = {e.task_id for e in events if e.kind in _DONE_KINDS}
+        day_ids = {d["id"] for d in day_esc}
+        # keep only items that were STILL open at end of that day (a task that
+        # got unblocked or finished later the same day no longer needs your hand)
+        hand = [d for d in day_esc
+                if _final_bucket(d["task_id"], events) in ("blocked", "failed", None)]
+        if date_str == today_str(cfg.timezone):
+            for od in store.open_decisions():
+                if od["id"] not in day_ids:
+                    hand.append(od)
+
+        # 2) completed today -> AI/heuristic summary. Schema-agnostic: a task is
+        #    "done today" if any event this day transitions it to a done-bucket
+        #    (covers literal 'completed' kinds AND status-change payloads).
+        done_ids = {e.task_id for e in events
+                    if e.kind in _DONE_KINDS or event_bucket(e) == "done"}
         done = []
         for tid in done_ids:
             bundle = src.task_bundle(tid, events)
@@ -1241,7 +1375,7 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = 
         # 3) in progress now (snapshot, not window)
         in_progress = [
             {"task_id": t.id, "title": t.title, "status": t.status}
-            for t in tasks.values() if t.status in _ACTIVE_STATUS
+            for t in tasks.values() if _bucket_of(t.status) == "active"
         ][:25]
 
         # 4) cost / usage
@@ -1249,7 +1383,8 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = 
         usage_month = fetch_usage(cfg, days=_days_into_month(date_str, cfg.timezone))
         today_eur = estimate_cost_eur(usage, cfg)
         month_eur = estimate_cost_eur(usage_month, cfg)
-        runs = len([e for e in events if e.kind in ("claimed", "spawned")])
+        runs = len([e for e in events
+                    if e.kind in ("claimed", "spawned") or event_bucket(e) == "active"])
         caveat = _CAVEAT[lang] if not src.has_run_token_columns() else ""
         cost = {
             "today_eur": round(today_eur, 2), "month_eur": round(month_eur, 2),
@@ -1307,9 +1442,9 @@ def _extract_learned(src: KanbanSource, events: list[Event]) -> list[str]:
     """Very light: surface short 'notiert'/'learned'-style comment lines, if any."""
     out: list[str] = []
     seen = set()
-    for tid in {e.task_id for e in events if e.kind == "commented"}:
+    for tid in {e.task_id for e in events}:
         for c in src.fetch_comments(tid):
-            body = (c.get("body") or c.get("text") or c.get("content") or "").strip()
+            body = _any_text(c).strip()
             low = body.lower()
             if any(tag in low for tag in ("gelernt", "learned", "notiert", "erkenntnis", "lesson")):
                 line = " ".join(body.split())
@@ -1328,7 +1463,7 @@ def build_recent(cfg: Config, days: int = 7) -> dict:
     """Build the last `days` daily digests (oldest->newest), skipping ones already
     cached except today (always refreshed). Manages the shared build status so the
     dashboard can show progress. Safe to call on first open."""
-    z = ZoneInfo(cfg.timezone)
+    z = _safe_zoneinfo(cfg.timezone)
     today = datetime.now(z).date()
     # newest first: today, yesterday, ... so the most relevant briefing shows first
     dates = [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
@@ -1358,7 +1493,7 @@ def build_recent(cfg: Config, days: int = 7) -> dict:
 
 def next_run(cfg: Config) -> dict:
     """Compute the next scheduled build time from cfg.schedule (local HH:MM list)."""
-    z = ZoneInfo(cfg.timezone)
+    z = _safe_zoneinfo(cfg.timezone)
     now = datetime.now(z)
     candidates = []
     for hm in cfg.schedule:
@@ -1379,7 +1514,7 @@ def next_run(cfg: Config) -> dict:
 
 def build_range(cfg: Config, from_date: str, to_date: str) -> dict:
     """Roll up daily digests into a weekly/monthly view (builds missing days)."""
-    z = ZoneInfo(cfg.timezone)
+    z = _safe_zoneinfo(cfg.timezone)
     start = datetime.strptime(from_date, "%Y-%m-%d").replace(tzinfo=z)
     end = datetime.strptime(to_date, "%Y-%m-%d").replace(tzinfo=z)
     store = Store(cfg)
@@ -1542,7 +1677,7 @@ def _fmt_deadline(deadline, tz: str) -> str:
         v = float(deadline)
         if v > 1e12:
             v /= 1000
-        dt = datetime.fromtimestamp(v, ZoneInfo(tz))
+        dt = datetime.fromtimestamp(v, _safe_zoneinfo(tz))
         return dt.strftime("%a %H:%M")
     except Exception:
         return str(deadline) if deadline else ""
