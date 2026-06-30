@@ -103,8 +103,7 @@ Final layout (the standard Hermes plugin contract — a `dashboard/` subfolder):
 ~/.hermes/plugins/briefing/
 └── dashboard/
     ├── manifest.json
-    ├── plugin_api.py          # backend routes (FastAPI) + standalone CLI
-    ├── briefing_core/        # aggregation, escalation, summarizer, renderers
+    ├── plugin_api.py          # the whole plugin in one file: routes + aggregation + renderers + CLI
     ├── send_report.py         # build + email today's briefing
     ├── dist/index.js          # the Briefing tab (React, via the Plugin SDK)
     ├── config.example.yaml
@@ -242,6 +241,7 @@ Then hard-refresh the browser (Ctrl/Cmd+Shift+R). If it still 404s:
 1. Confirm the file exists at `~/.hermes/plugins/briefing/dashboard/plugin_api.py` and the manifest has `"api": "plugin_api.py"`.
 2. Open `/api/plugins/briefing/health` in the browser. If the plugin loaded but a dependency failed, it returns the **Python traceback** here (instead of a 404) — copy that into an issue.
 3. Tail `~/.hermes/logs/errors.log` for `Failed to load plugin briefing API routes`.
+4. In Docker, a `docker restart <container>` must actually restart the dashboard process. Verify after: open `/api/plugins/briefing/health` — `{"ok": true}` means the routes mounted. The backend is a single self-contained `plugin_api.py` (no sub-packages), so if the bundled kanban plugin's API works, this one mounts the same way.
 
 **The tab is empty / no briefings.** It builds today on first open via GET. If that 404s, it's the mount problem above. Once routes are mounted, opening the tab (or `python plugin_api.py render`) builds on demand.
 

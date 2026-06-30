@@ -18,9 +18,7 @@ from email.message import EmailMessage
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from briefing_core.config import load_config            # noqa: E402
-from briefing_core.aggregate import build_digest, today_str  # noqa: E402
-from briefing_core.render_md import render_day           # noqa: E402
+from plugin_api import load_config, build_digest, today_str, render_day  # noqa: E402
 
 
 def send_email(cfg, subject: str, body_md: str) -> None:

@@ -11,4 +11,4 @@ Environment=HERMES_HOME=%h/.hermes
 # Optional: enable the AI summarizer for richer "why" lines
 # Environment=REPORTS_LLM_ENABLED=1
 # Environment=REPORTS_LLM_API_KEY=sk-...
-ExecStart=/usr/bin/python3 %h/.hermes/plugins/reports/dashboard/send_report.py
+ExecStart=/usr/bin/python3 %h/.hermes/plugins/briefing/dashboard/send_report.py
