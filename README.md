@@ -54,6 +54,8 @@ What gets escalated is pure, auditable event-type logic. The LLM is a compressor
 - **One digest, many renderers** — Markdown (email) and the dashboard tab render the _same_ JSON, so they never drift. Weekly/monthly are pure roll-ups of the daily digests.
 - **Cost-aware & cheap** — token→€ from `hermes insights`, against a budget bar. Task summaries are cached on `(task_id, last_event_id)` and only recomputed on new events. The AI summarizer is **off by default**; the deterministic fallback uses the `completed` summary / `blocked` reason directly.
 - **Zero runtime dependencies** — reads the board read-only (WAL-safe), talks to any OpenAI-compatible or Anthropic endpoint via stdlib only.
+- **Zero-setup first run** — open the tab and it auto-builds the last 7 days, with a live status bar that shows background builds (whether started by you or the timer) and the next scheduled build.
+- **English by default** — set `language: de` for the original German labels. Verbatim agent text (block reasons, summaries) is always shown as the agent wrote it.
 - **Works without the dashboard** — a standalone CLI prints any day's briefing; email it with the bundled systemd timer.
 
 ---
@@ -134,6 +136,9 @@ python plugin_api.py render
 # 3. A specific day, or a weekly roll-up
 python plugin_api.py render 2026-06-26
 python plugin_api.py range  2026-06-22 2026-06-26
+
+# Pre-build the last N days (the dashboard does this for you on first open)
+python plugin_api.py bootstrap 7
 ```
 
 If `inspect-schema` shows a wrong column under `resolved_columns`, set an override in `config.yaml` — that's the only thing that ever needs hand-tuning.
@@ -171,6 +176,8 @@ Everything is optional and lives in `~/.hermes/briefing/config.yaml`; `REPORTS_*
 | `pricing` | € per 1M tokens per model. **Verify against your provider** — defaults are placeholders, so cost is rendered with `≈`. |
 | `approval_keywords` | Substrings in a `blocked` reason that mean "a human must decide". German + English defaults included. |
 | `protocol_violation_alert_threshold` | Flag a task as _Instabil_ after this many violations in a window. |
+| `schedule` | Local `HH:MM` times your timer/cron runs — drives the "next build" hint in the dashboard. |
+| `language` | `en` (default) or `de`. |
 | `llm.enabled` | Turn on for richer "why" lines. Any OpenAI-compatible endpoint or Anthropic. ≤120 tokens, cached, cheap. |
 | `schema` | Column-name overrides — only if PRAGMA auto-detection guesses wrong. |
 
@@ -187,6 +194,8 @@ Mounted at `/api/plugins/briefing/`:
 | `/digests?limit=` | GET | list of cached days (date, open, cost) |
 | `/digest/{date}?rebuild=` | GET | structured digest JSON |
 | `/render/{date}` | GET | the Markdown briefing (text/plain) |
+| `/status` | GET | build-in-progress state, next scheduled run, last built |
+| `/build` | POST | background build — `{"days":N}` bootstraps, `{"date":"…"}` rebuilds one day |
 | `/range?from_=&to=` | GET | weekly/monthly roll-up |
 | `/decisions` | GET | open "needs your hand" items |
 | `/decisions/{id}/resolve` | POST | body `{"resolution":"ok"\|"veto"}` |

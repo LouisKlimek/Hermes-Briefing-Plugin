@@ -15,12 +15,15 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 
 # make the sibling `reports` package importable however the loader pulls us in
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from reports.config import load_config                       # noqa: E402
-from reports.aggregate import build_digest, build_range, today_str  # noqa: E402
+from reports.aggregate import (                              # noqa: E402
+    build_digest, build_range, build_recent, next_run, today_str,
+)
 from reports.render_md import render_day, render_range       # noqa: E402
 from reports.store import Store                               # noqa: E402
 from reports.kanban_source import KanbanSource               # noqa: E402
@@ -80,11 +83,44 @@ if router is not None:
         finally:
             store.close()
         d = d or build_digest(cfg, date)
-        return render_day(d, cfg.timezone)
+        return render_day(d, cfg.timezone, cfg.language)
 
     @router.get("/range")
     async def range_(from_: str, to: str):
-        return build_range(load_config(), from_, to)
+        cfg = load_config()
+        return build_range(cfg, from_, to)
+
+    @router.get("/status")
+    async def status():
+        cfg = load_config()
+        store = Store(cfg)
+        try:
+            bs = store.build_status()
+        finally:
+            store.close()
+        return {"build": bs, "next_run": next_run(cfg), "schedule": cfg.schedule,
+                "timezone": cfg.timezone}
+
+    @router.post("/build")
+    async def build(body: dict = Body(default={})):
+        """Background build. {"days": N} bootstraps recent days; {"date": "..."}
+        rebuilds one day. Returns immediately; poll /status for progress."""
+        cfg = load_config()
+        store = Store(cfg)
+        try:
+            if store.build_status().get("running"):
+                return {"started": False, "reason": "already running"}
+        finally:
+            store.close()
+
+        body = body or {}
+        if body.get("days"):
+            days = int(body["days"])
+            threading.Thread(target=build_recent, args=(cfg, days), daemon=True).start()
+            return {"started": True, "mode": "bootstrap", "days": days}
+        date = body.get("date") or today_str(cfg.timezone)
+        threading.Thread(target=build_digest, args=(cfg, date), daemon=True).start()
+        return {"started": True, "mode": "day", "date": date}
 
     @router.get("/decisions")
     async def decisions():
@@ -124,7 +160,13 @@ def _cli(argv: list[str]) -> int:
 
     if cmd == "render":
         date = argv[1] if len(argv) > 1 else today_str(cfg.timezone)
-        print(render_day(build_digest(cfg, date), cfg.timezone))
+        print(render_day(build_digest(cfg, date), cfg.timezone, cfg.language))
+        return 0
+
+    if cmd == "bootstrap":
+        days = int(argv[1]) if len(argv) > 1 else 7
+        out = build_recent(cfg, days)
+        print(f"built: {out.get('built')}  skipped: {out.get('skipped')}")
         return 0
 
     if cmd == "build":
@@ -137,7 +179,7 @@ def _cli(argv: list[str]) -> int:
         if len(argv) < 3:
             print("usage: range FROM TO  (YYYY-MM-DD YYYY-MM-DD)")
             return 2
-        print(render_range(build_range(cfg, argv[1], argv[2])))
+        print(render_range(build_range(cfg, argv[1], argv[2]), lang=cfg.language))
         return 0
 
     print(__doc__)

@@ -20,14 +20,16 @@ import urllib.request
 from .config import Config
 from .store import Store
 
-_SYS = (
-    "Du fasst die Aktivität EINER Kanban-Aufgabe für einen Tagesreport zusammen. "
-    "Antworte NUR mit JSON: {\"outcome\": str, \"why\": str, \"waiting_on\": str|null, "
-    "\"bullets\": [str, ...]}. "
-    "Maximal 2 bullets, je <= 12 Wörter, Deutsch, knapp, kein Vorwort, keine Floskeln. "
-    "outcome = was passierte (z.B. 'fertig', 'blockiert', 'aufgegeben'). "
-    "why = der eine Grund in <= 12 Wörtern. waiting_on = worauf gewartet wird oder null."
-)
+def _sys(lang: str) -> str:
+    out_lang = "German" if lang == "de" else "English"
+    return (
+        "You summarize the activity of ONE kanban task for a daily briefing. "
+        "Respond ONLY with JSON: {\"outcome\": str, \"why\": str, "
+        "\"waiting_on\": str|null, \"bullets\": [str, ...]}. "
+        f"At most 2 bullets, each <= 12 words, in {out_lang}, terse, no preamble, no filler. "
+        "outcome = what happened (e.g. 'done', 'blocked', 'gave up'). "
+        "why = the single reason in <= 12 words. waiting_on = what it waits on, or null."
+    )
 
 
 def _last_text(bundle: dict, kinds: tuple[str, ...]) -> str:
@@ -45,12 +47,15 @@ def _last_text(bundle: dict, kinds: tuple[str, ...]) -> str:
     return ""
 
 
-def _fallback(bundle: dict) -> dict:
+def _fallback(bundle: dict, lang: str = "en") -> dict:
     kinds = [e.get("kind") for e in bundle.get("events", [])]
     done = "completed" in kinds
     blocked = "blocked" in kinds
     failed = any(k in kinds for k in ("gave_up", "timed_out"))
-    outcome = "fertig" if done else "aufgegeben" if failed else "blockiert" if blocked else "in Arbeit"
+    words = ({"done": "fertig", "gave up": "aufgegeben", "blocked": "blockiert", "wip": "in Arbeit"}
+             if lang == "de" else
+             {"done": "done", "gave up": "gave up", "blocked": "blocked", "wip": "in progress"})
+    outcome = words["done"] if done else words["gave up"] if failed else words["blocked"] if blocked else words["wip"]
     why = _last_text(bundle, ("completed",)) if done else \
           _last_text(bundle, ("blocked", "gave_up", "timed_out"))
     why = " ".join(why.split())
@@ -60,7 +65,7 @@ def _fallback(bundle: dict) -> dict:
     if blocked and not done:
         bt = _last_text(bundle, ("blocked",)).lower()
         if any(w in bt for w in ("freigabe", "boss", "wartet", "approval", "review")):
-            waiting = "Freigabe"
+            waiting = "Freigabe" if lang == "de" else "approval"
     bullets = [why] if why else [outcome]
     return {"outcome": outcome, "why": why, "waiting_on": waiting, "bullets": bullets}
 
@@ -81,7 +86,7 @@ def _compact_bundle(bundle: dict) -> str:
 def _call_openai(cfg: Config, prompt: str) -> str:
     body = json.dumps({
         "model": cfg.llm.model,
-        "messages": [{"role": "system", "content": _SYS}, {"role": "user", "content": prompt}],
+        "messages": [{"role": "system", "content": _sys(cfg.language)}, {"role": "user", "content": prompt}],
         "max_tokens": cfg.llm.max_tokens, "temperature": cfg.llm.temperature,
     }).encode()
     req = urllib.request.Request(
@@ -96,7 +101,7 @@ def _call_openai(cfg: Config, prompt: str) -> str:
 def _call_anthropic(cfg: Config, prompt: str) -> str:
     body = json.dumps({
         "model": cfg.llm.model, "max_tokens": cfg.llm.max_tokens,
-        "temperature": cfg.llm.temperature, "system": _SYS,
+        "temperature": cfg.llm.temperature, "system": _sys(cfg.language),
         "messages": [{"role": "user", "content": prompt}],
     }).encode()
     req = urllib.request.Request(
@@ -124,12 +129,11 @@ def summarize_task(bundle: dict, cfg: Config, store: Store) -> dict:
             "bullets": json.loads(cached["bullets"] or "[]"),
         }
 
-    result = _fallback(bundle)
+    result = _fallback(bundle, cfg.language)
     if cfg.llm.enabled and cfg.llm.api_key:
         try:
             prompt = f"Aufgabe {task_id}. Aktivität:\n{_compact_bundle(bundle)}"
-            raw = _call_anthropic(cfg, prompt) if cfg.llm.provider == "anthropic" \
-                else _call_openai(cfg, prompt)
+            raw = _call_anthropic(cfg, prompt) if cfg.llm.provider == "anthropic" else _call_openai(cfg, prompt)
             parsed = _parse_json(raw)
             result = {
                 "outcome": str(parsed.get("outcome", result["outcome"]))[:40],

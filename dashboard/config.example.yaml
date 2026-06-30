@@ -1,9 +1,14 @@
-# Hermes Reports — optional config.
-# Copy to  ~/.hermes/reports/config.yaml  and edit. Everything is optional;
+# Hermes Briefing — optional config.
+# Copy to  ~/.hermes/briefing/config.yaml  and edit. Everything is optional;
 # env vars (REPORTS_*) override these. Delete anything you don't need.
 
 timezone: Europe/Berlin
-language: de
+language: en            # en | de
+
+# Local times the systemd timer / cron builds the briefing — used to show
+# "next build" in the dashboard. Match these to your timer.
+schedule:
+  - "19:30"
 
 budget:
   daily_eur: 15

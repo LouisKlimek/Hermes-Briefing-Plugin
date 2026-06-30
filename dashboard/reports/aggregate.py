@@ -34,6 +34,13 @@ _ERROR_KINDS = {"protocol_violation", "crashed", "spawn_failed", "timed_out", "g
 _DONE_KINDS = {"completed"}
 _ACTIVE_STATUS = {"running", "ready", "claimed", "todo"}
 
+_STATUS_WORD = {"en": {"active": "active", "quiet": "quiet"},
+                "de": {"active": "läuft", "quiet": "ruhig"}}
+_CAVEAT = {
+    "en": "insights counts mostly interactive sessions; worker runs may be missing.",
+    "de": "insights zählt v.a. interaktive Sessions; Worker-Runs evtl. nicht erfasst.",
+}
+
 
 def day_bounds(date_str: str, tz: str) -> tuple[int, int, datetime]:
     z = ZoneInfo(tz)
@@ -53,19 +60,22 @@ def _month_start_ts(date_str: str, tz: str) -> int:
     return int(d.timestamp())
 
 
-def build_digest(cfg: Config, date_str: str, persist: bool = True) -> dict:
+def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = True) -> dict:
     start_ts, end_ts, _ = day_bounds(date_str, cfg.timezone)
     src = KanbanSource(cfg)
     store = Store(cfg)
+    lang = cfg.language if cfg.language in _STATUS_WORD else "en"
+    if mark:
+        store.build_begin(f"Building briefing for {date_str}", 1)
     try:
         store.expire_due()
         events = src.fetch_events(start_ts, end_ts)
-        task_ids = {e.task_id for e in events}
         tasks = src.fetch_tasks()  # snapshot of current statuses
 
-        # 1) deterministic escalation -> persistent decisions
+        # 1) deterministic escalation -> persistent decisions, then reconcile
         for d in escalate(events, tasks, cfg):
             store.upsert_decision(d)
+        store.reconcile_decisions(tasks)
         hand = store.open_decisions()
 
         # 2) completed today -> AI/heuristic summary
@@ -90,8 +100,7 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True) -> dict:
         today_eur = estimate_cost_eur(usage, cfg)
         month_eur = estimate_cost_eur(usage_month, cfg)
         runs = len([e for e in events if e.kind in ("claimed", "spawned")])
-        caveat = "insights zählt v.a. interaktive Sessions; Worker-Runs evtl. nicht erfasst." \
-            if not src.has_run_token_columns() else ""
+        caveat = _CAVEAT[lang] if not src.has_run_token_columns() else ""
         cost = {
             "today_eur": round(today_eur, 2), "month_eur": round(month_eur, 2),
             "budget_daily": cfg.budget_daily_eur, "budget_monthly": cfg.budget_monthly_eur,
@@ -112,7 +121,8 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True) -> dict:
         # 6) learned (optional, lightweight: pull short comment lines tagged as notes)
         learned = _extract_learned(src, events)
 
-        status = "läuft" if hand or done or in_progress else "ruhig"
+        status = (_STATUS_WORD[lang]["active"] if hand or done or in_progress
+                  else _STATUS_WORD[lang]["quiet"])
         digest = {
             "date": date_str, "range": "day", "generated_at": int(time.time()),
             "header": {"status": status, "open": len(hand),
@@ -126,6 +136,8 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True) -> dict:
             store.put_digest(date_str, digest)
         return digest
     finally:
+        if mark:
+            store.build_finish()
         src.close()
         store.close()
 
@@ -160,6 +172,58 @@ def _extract_learned(src: KanbanSource, events: list[Event]) -> list[str]:
                     seen.add(line)
                     out.append(line)
     return out[:5]
+
+
+def build_recent(cfg: Config, days: int = 7) -> dict:
+    """Build the last `days` daily digests (oldest->newest), skipping ones already
+    cached except today (always refreshed). Manages the shared build status so the
+    dashboard can show progress. Safe to call on first open."""
+    z = ZoneInfo(cfg.timezone)
+    today = datetime.now(z).date()
+    dates = [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days - 1, -1, -1)]
+    store = Store(cfg)
+    built, skipped = [], []
+    try:
+        if store.build_status().get("running"):
+            return {"started": False, "reason": "already running", **store.build_status()}
+        store.build_begin("Setting up — building recent briefings", len(dates))
+        for i, ds in enumerate(dates, 1):
+            store.build_step(f"{ds} ({i}/{len(dates)})", i - 1)
+            is_today = ds == dates[-1]
+            if not is_today and store.get_digest(ds):
+                skipped.append(ds)
+            else:
+                build_digest(cfg, ds, mark=False)   # don't touch overall status
+                built.append(ds)
+            store.build_step(f"{ds} ({i}/{len(dates)})", i)
+        store.build_finish()
+        return {"started": True, "built": built, "skipped": skipped}
+    except Exception as e:  # pragma: no cover
+        store.build_finish(error=str(e))
+        return {"started": True, "error": str(e), "built": built}
+    finally:
+        store.close()
+
+
+def next_run(cfg: Config) -> dict:
+    """Compute the next scheduled build time from cfg.schedule (local HH:MM list)."""
+    z = ZoneInfo(cfg.timezone)
+    now = datetime.now(z)
+    candidates = []
+    for hm in cfg.schedule:
+        try:
+            hh, mm = [int(x) for x in str(hm).split(":")[:2]]
+        except Exception:
+            continue
+        for day_offset in (0, 1):
+            cand = (now + timedelta(days=day_offset)).replace(hour=hh, minute=mm, second=0, microsecond=0)
+            if cand > now:
+                candidates.append(cand)
+                break
+    if not candidates:
+        return {"epoch": None, "iso": None}
+    nxt = min(candidates)
+    return {"epoch": int(nxt.timestamp()), "iso": nxt.isoformat(), "schedule": cfg.schedule}
 
 
 def build_range(cfg: Config, from_date: str, to_date: str) -> dict:

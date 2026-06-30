@@ -72,10 +72,12 @@ def escalate(events: list[Event], tasks: dict, cfg: Config) -> list[dict]:
 
         elif e.kind in _FAILED_KINDS:
             key = f"{e.task_id}:failed"
+            default_detail = ("Gave up after retries." if cfg.language != "de"
+                              else "Endgültig fehlgeschlagen nach Retries.")
             primary[e.task_id] = {
                 "id": key, "task_id": e.task_id, "kind": "failed",
                 "title": task_title,
-                "detail": _short(_reason_text(e) or "Endgültig fehlgeschlagen nach Retries.", 280),
+                "detail": _short(_reason_text(e) or default_detail, 280),
                 "deadline": None,
             }
 
@@ -87,10 +89,13 @@ def escalate(events: list[Event], tasks: dict, cfg: Config) -> list[dict]:
         if n >= cfg.protocol_violation_alert_threshold and task_id not in primary:
             t = tasks.get(task_id)
             key = f"{task_id}:instability"
+            detail = (f"{n}× protocol violation in window — worker exited without complete/block."
+                      if cfg.language != "de"
+                      else f"{n}× Protokollverletzung im Zeitraum — Worker stieg ohne complete/block aus.")
             decisions[task_id] = {
                 "id": key, "task_id": task_id, "kind": "instability",
                 "title": t.title if t else task_id,
-                "detail": f"{n}× Protokollverletzung im Zeitraum — Worker stieg ohne complete/block aus.",
+                "detail": detail,
                 "deadline": None,
             }
 

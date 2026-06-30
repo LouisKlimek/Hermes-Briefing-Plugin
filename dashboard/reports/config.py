@@ -71,7 +71,8 @@ class Config:
     kanban_db: Path | None = None          # default: <hermes_home>/kanban.db
     reports_dir: Path | None = None        # default: <hermes_home>/reports
     timezone: str = "Europe/Berlin"
-    language: str = "de"
+    language: str = "en"          # "en" | "de"
+    schedule: list[str] = field(default_factory=lambda: ["19:30"])  # local times the timer runs
 
     budget_daily_eur: float = 15.0
     budget_monthly_eur: float = 400.0
@@ -93,18 +94,22 @@ class Config:
         return Path(self.kanban_db) if self.kanban_db else self.hermes_home / "kanban.db"
 
     def resolved_reports_dir(self) -> Path:
-        p = Path(self.reports_dir) if self.reports_dir else self.hermes_home / "reports"
+        p = Path(self.reports_dir) if self.reports_dir else self.hermes_home / "briefing"
         p.mkdir(parents=True, exist_ok=True)
         return p
 
     def reports_db(self) -> Path:
-        return self.resolved_reports_dir() / "reports.db"
+        return self.resolved_reports_dir() / "briefing.db"
 
 
 def _apply_yaml(cfg: Config, data: dict[str, Any]) -> None:
     for k in ("timezone", "language", "kanban_db", "reports_dir"):
         if data.get(k) is not None:
             setattr(cfg, k, data[k])
+    if isinstance(data.get("schedule"), list):
+        cfg.schedule = [str(s) for s in data["schedule"]]
+    elif data.get("schedule"):
+        cfg.schedule = [str(data["schedule"])]
     if "budget" in data:
         b = data["budget"]
         cfg.budget_daily_eur = float(b.get("daily_eur", cfg.budget_daily_eur))
@@ -135,6 +140,7 @@ def _apply_env(cfg: Config) -> None:
     if e("REPORTS_DIR"):             cfg.reports_dir = e("REPORTS_DIR")
     if e("REPORTS_TIMEZONE"):        cfg.timezone = e("REPORTS_TIMEZONE")
     if e("REPORTS_LANGUAGE"):        cfg.language = e("REPORTS_LANGUAGE")
+    if e("REPORTS_SCHEDULE"):        cfg.schedule = [s.strip() for s in e("REPORTS_SCHEDULE").split(",") if s.strip()]
     if e("REPORTS_BUDGET_DAILY"):    cfg.budget_daily_eur = float(e("REPORTS_BUDGET_DAILY"))
     if e("REPORTS_BUDGET_MONTHLY"):  cfg.budget_monthly_eur = float(e("REPORTS_BUDGET_MONTHLY"))
     # LLM
