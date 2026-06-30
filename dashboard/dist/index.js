@@ -7,8 +7,7 @@
   var React = SDK.React;
   var h = React.createElement;
   var hooks = SDK.hooks || {};
-  var useState = hooks.useState, useEffect = hooks.useEffect,
-      useCallback = hooks.useCallback, useRef = hooks.useRef;
+  var useState = hooks.useState, useEffect = hooks.useEffect, useCallback = hooks.useCallback, useRef = hooks.useRef;
   var C = SDK.components || {};
   var Card = C.Card, CardHeader = C.CardHeader, CardTitle = C.CardTitle, CardContent = C.CardContent;
   var Badge = C.Badge, Button = C.Button, Separator = C.Separator;
@@ -21,6 +20,11 @@
   var MUTED = "var(--color-muted-foreground)";
 
   function eur(n) { return "\u2248 " + (Number(n) || 0).toFixed(2) + " \u20ac"; }
+  function ymd(d, tz) {
+    try { return new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(d); }
+    catch (e) { return d.toISOString().slice(0, 10); }
+  }
+  function daysAgo(n) { return new Date(Date.now() - n * 86400000); }
 
   function nextBuildLabel(nextRun) {
     if (!nextRun || !nextRun.iso) return null;
@@ -38,31 +42,27 @@
       props.children);
   }
 
-  function Generating(props) {
-    var b = props.build || {};
-    var total = b.total || 0, done = b.done || 0;
-    var pct = total ? Math.max(6, Math.round((done / total) * 100)) : 0;
-    return h("div", { className: "brf-fade-in", style: { padding: "2.5rem 1rem", textAlign: "center" } },
-      h("div", { className: "brf-spinner brf-spinner-lg", style: { margin: "0 auto 1rem" } }),
-      h("div", { style: { fontSize: "0.98rem", marginBottom: "0.4rem" } }, "Generating your briefings\u2026"),
-      h("div", { style: { fontSize: "0.8rem", color: MUTED, marginBottom: "1rem" } },
-        b.current ? ("Working on " + b.current) : "Reading the board"),
-      total
-        ? h("div", { className: "brf-progress", style: { maxWidth: "320px", margin: "0 auto" } },
-            h("div", { className: "brf-progress-fill", style: { width: pct + "%" } }))
-        : h("div", { className: "brf-progress brf-progress-indeterminate", style: { maxWidth: "320px", margin: "0 auto" } }),
-      total ? h("div", { style: { fontSize: "0.72rem", color: MUTED, marginTop: "0.55rem" } }, done + " / " + total + " days") : null
-    );
-  }
-
   function Skeleton() {
-    function bar(w, hgt, mb) {
-      return h("div", { className: "brf-skel", style: { height: (hgt || 12) + "px", width: w, marginBottom: (mb == null ? 8 : mb) + "px" } });
-    }
+    function bar(w, hgt, mb) { return h("div", { className: "brf-skel", style: { height: (hgt || 12) + "px", width: w, marginBottom: (mb == null ? 8 : mb) + "px" } }); }
     return h("div", { className: "brf-fade-in", style: { paddingLeft: "1rem", flex: 1 } },
       bar("38%", 18, 16), bar("88%"), bar("64%"), bar("72%"),
-      h("div", { style: { height: "12px" } }), bar("80%"), bar("52%"),
-      h("div", { style: { height: "12px" } }), bar("46%", 12, 8), bar("60%"));
+      h("div", { style: { height: "12px" } }), bar("80%"), bar("52%"));
+  }
+
+  function Spinner(props) { return h("span", { className: "brf-spinner" + (props && props.lg ? " brf-spinner-lg" : ""), style: props && props.style }); }
+
+  function TabButton(props) {
+    var active = props.active;
+    return h("button", {
+      onClick: props.onClick,
+      className: "brf-card",
+      style: {
+        border: "1px solid var(--color-border)", borderRadius: "999px",
+        padding: "0.25rem 0.9rem", fontSize: "0.82rem", cursor: "pointer",
+        background: active ? "var(--color-primary, var(--color-accent))" : "transparent",
+        color: active ? "var(--color-primary-foreground, var(--color-accent-foreground))" : "inherit"
+      }
+    }, props.label);
   }
 
   function HandItem(props) {
@@ -79,29 +79,94 @@
           h(Button, { key: "ok", size: "sm", disabled: busy, onClick: function () { onResolve(d.id, "ok"); } }, "Give OK"),
           h(Button, { key: "veto", size: "sm", variant: "destructive", disabled: busy, onClick: function () { onResolve(d.id, "veto"); } }, "Veto")
         ] : null,
-        busy ? h("span", { className: "brf-spinner" }) : null)
-    );
+        busy ? h(Spinner) : null));
+  }
+
+  function MiniBars(props) {
+    var rows = props.rows || [], field = props.field || "cost";
+    var max = Math.max.apply(null, rows.map(function (r) { return r[field] || 0; }).concat([0.0001]));
+    return h("div", { style: { display: "flex", alignItems: "flex-end", gap: "4px", height: "60px", marginTop: "0.4rem" } },
+      rows.map(function (r, i) {
+        var pct = Math.round(((r[field] || 0) / max) * 100);
+        return h("div", { key: r.date, title: r.date + ": " + (r[field] || 0), style: { flex: 1, display: "flex", flexDirection: "column", justifyContent: "flex-end", alignItems: "center" } },
+          h("div", { className: "brf-progress-fill", style: { width: "100%", height: Math.max(3, pct) + "%", borderRadius: "3px", transition: "height .5s ease", transitionDelay: (i * 30) + "ms" } }),
+          h("div", { style: { fontSize: "0.6rem", color: MUTED, marginTop: "2px" } }, r.date.slice(8)));
+      }));
+  }
+
+  function DigestView(props) {
+    var digest = props.digest, building = props.building;
+    var hd = digest.header || {}, cost = digest.cost || {}, sys = digest.system || {};
+    return h("div", { key: digest.date, className: "brf-fade-in", style: { flex: 1, paddingLeft: "1rem", overflowY: "auto", maxHeight: "68vh" } },
+      h("div", { style: { display: "flex", alignItems: "baseline", gap: "0.75rem", marginBottom: "0.35rem", flexWrap: "wrap" } },
+        h("h3", { style: { margin: 0, fontSize: "1.05rem" } }, digest.date + " \u00b7 " + (hd.status || "")),
+        h("span", { style: { fontSize: "0.85rem", color: MUTED } },
+          (hd.open ? hd.open + " open" : "nothing open") + " \u00b7 " + eur(hd.cost_eur) + " / " + (cost.budget_daily || 0).toFixed(0) + " \u20ac"),
+        Button ? h(Button, { size: "sm", variant: "secondary", disabled: building, onClick: props.onRebuild },
+          building ? h("span", null, h(Spinner, { style: { marginRight: "0.35rem" } }), "Building\u2026") : "Rebuild") : null,
+        digest.generated_at ? h("span", { style: { fontSize: "0.72rem", color: MUTED } }, "built " + timeAgo(digest.generated_at)) : null),
+
+      (digest.hand && digest.hand.length)
+        ? h(Section, { title: "Needs your call" }, digest.hand.map(function (d) { return h(HandItem, { key: d.id, d: d, onResolve: props.onResolve, busy: props.busyId === d.id }); }))
+        : h(Section, { title: "Needs your call" }, h("div", { style: { fontSize: "0.82rem", color: MUTED } }, "Nothing open.")),
+
+      Separator ? h(Separator, { style: { margin: "0.5rem 0" } }) : null,
+
+      (digest.done && digest.done.length)
+        ? h(Section, { title: "Done today" }, digest.done.map(function (it, i) {
+            var b = (it.bullets && it.bullets[0]) || it.why || "done";
+            return h("div", { key: i, style: { fontSize: "0.84rem", marginBottom: "0.25rem" } }, h("strong", null, it.title), " \u2014 ", b); }))
+        : null,
+      (digest.in_progress && digest.in_progress.length)
+        ? h(Section, { title: "Active" }, h("div", { style: { fontSize: "0.84rem" } }, digest.in_progress.map(function (t) { return t.title; }).join(", ")))
+        : null,
+      (digest.learned && digest.learned.length)
+        ? h(Section, { title: "Noted" }, digest.learned.map(function (l, i) { return h("div", { key: i, style: { fontSize: "0.82rem", marginBottom: "0.2rem" } }, "\u2022 " + l); }))
+        : null,
+      h(Section, { title: "Cost" },
+        h("div", { style: { fontSize: "0.84rem" } },
+          "Today " + eur(cost.today_eur) + " / " + (cost.budget_daily || 0).toFixed(0) + " \u20ac \u00b7 Month " + eur(cost.month_eur) + " / " + (cost.budget_monthly || 0).toFixed(0) + " \u20ac \u00b7 " + (cost.runs || 0) + " runs"),
+        cost.caveat ? h("div", { style: { fontSize: "0.74rem", color: MUTED, marginTop: "0.2rem" } }, "\u26a0 " + cost.caveat) : null),
+      h(Section, { title: "System" }, h("div", { style: { fontSize: "0.84rem" } }, sys.stable ? "stable" : ((sys.notes || []).join(", ") || "\u2014"))));
+  }
+
+  function RangeView(props) {
+    var r = props.roll, title = props.title;
+    var st = r.decision_stats || {};
+    return h("div", { className: "brf-fade-in", style: { flex: 1, padding: "0 0.5rem", overflowY: "auto", maxHeight: "68vh" } },
+      h("h3", { style: { margin: "0 0 0.1rem", fontSize: "1.05rem" } }, title),
+      h("div", { style: { fontSize: "0.8rem", color: MUTED, marginBottom: "0.8rem" } }, r.from + " \u2013 " + r.to),
+      h("div", { style: { display: "flex", gap: "1.5rem", flexWrap: "wrap", marginBottom: "0.4rem" } },
+        stat("Cost", eur(r.cost_eur)),
+        stat("Done", (r.done ? r.done.length : 0) + " tasks"),
+        stat("Decisions", (st.total || 0) + " \u00b7 " + (st.vetoed || 0) + " vetoed \u00b7 " + (st.open || 0) + " open")),
+      (r.days && r.days.length) ? h(Section, { title: "Daily cost" }, h(MiniBars, { rows: r.days, field: "cost" })) : null,
+      (r.hand && r.hand.length) ? h(Section, { title: "Still open" }, r.hand.map(function (d, i) {
+          return h("div", { key: i, style: { fontSize: "0.84rem", marginBottom: "0.2rem" } }, "\u2022 " + d.title); })) : null,
+      (r.done && r.done.length) ? h(Section, { title: "Done" }, r.done.slice(0, 25).map(function (it, i) {
+          var b = (it.bullets && it.bullets[0]) || it.why || "done";
+          return h("div", { key: i, style: { fontSize: "0.84rem", marginBottom: "0.2rem" } }, h("strong", null, it.title), " \u2014 ", b); })) : null,
+      (r.learned && r.learned.length) ? h(Section, { title: "Learned" }, r.learned.map(function (l, i) {
+          return h("div", { key: i, style: { fontSize: "0.82rem", marginBottom: "0.2rem" } }, "\u2022 " + l); })) : null);
+    function stat(label, val) {
+      return h("div", null,
+        h("div", { style: { fontSize: "0.68rem", textTransform: "uppercase", letterSpacing: "0.06em", color: MUTED } }, label),
+        h("div", { style: { fontSize: "0.95rem", fontWeight: 600 } }, val));
+    }
   }
 
   function StatusBar(props) {
     var st = props.status; if (!st) return null;
     var b = st.build || {};
     if (b.running) {
-      var total = b.total || 0, done = b.done || 0;
-      var pct = total ? Math.max(6, Math.round((done / total) * 100)) : 0;
-      return h("div", { className: "brf-fade-in", style: {
-          display: "flex", alignItems: "center", gap: "0.6rem", fontSize: "0.8rem",
-          padding: "0.45rem 0.65rem", borderRadius: "0.45rem", marginBottom: "0.6rem",
-          border: "1px solid var(--color-border)", background: "var(--color-card)" } },
-        h("span", { className: "brf-spinner" }),
-        h("span", { style: { whiteSpace: "nowrap" } }, "Building in background\u2026"),
-        h("span", { style: { color: MUTED, whiteSpace: "nowrap" } }, b.current || ""),
-        h("div", { style: { flex: 1, minWidth: "60px" } },
-          total
-            ? h("div", { className: "brf-progress" }, h("div", { className: "brf-progress-fill", style: { width: pct + "%" } }))
-            : h("div", { className: "brf-progress brf-progress-indeterminate" })),
-        total ? h("span", { style: { color: MUTED, whiteSpace: "nowrap" } }, done + "/" + total) : null
-      );
+      var total = b.total || 0, done = b.done || 0, pct = total ? Math.max(6, Math.round((done / total) * 100)) : 0;
+      return h("div", { className: "brf-fade-in", style: { display: "flex", alignItems: "center", gap: "0.6rem", fontSize: "0.8rem", padding: "0.45rem 0.65rem", borderRadius: "0.45rem", marginBottom: "0.6rem", border: "1px solid var(--color-border)", background: "var(--color-card)" } },
+        h(Spinner), h("span", { style: { whiteSpace: "nowrap" } }, "Building in background\u2026"),
+        h("span", { style: { color: MUTED } }, b.current || ""),
+        h("div", { style: { flex: 1, minWidth: "60px" } }, total
+          ? h("div", { className: "brf-progress" }, h("div", { className: "brf-progress-fill", style: { width: pct + "%" } }))
+          : h("div", { className: "brf-progress brf-progress-indeterminate" })),
+        total ? h("span", { style: { color: MUTED } }, done + "/" + total) : null);
     }
     var bits = [];
     var nb = nextBuildLabel(st.next_run);
@@ -113,163 +178,125 @@
   }
 
   function BriefingPage() {
-    var s1 = useState([]);    var days = s1[0], setDays = s1[1];
-    var s2 = useState(null);  var date = s2[0], setDate = s2[1];
-    var s3 = useState(null);  var digest = s3[0], setDigest = s3[1];
-    var s4 = useState(false); var loading = s4[0], setLoading = s4[1];
-    var s5 = useState("");    var busyId = s5[0], setBusyId = s5[1];
-    var s6 = useState(null);  var status = s6[0], setStatus = s6[1];
-    var bootstrapped = useRef(false);
-    var wasRunning = useRef(false);
-    var seenDays = useRef({});
+    var sTab = useState("day"); var tab = sTab[0], setTab = sTab[1];
+    var sTz = useState("Europe/Berlin"); var tz = sTz[0], setTz = sTz[1];
+    var sStatus = useState(null); var status = sStatus[0], setStatus = sStatus[1];
+    var sList = useState({}); var built = sList[0], setBuilt = sList[1];   // date -> {open,cost}
+    var sDate = useState(null); var date = sDate[0], setDate = sDate[1];
+    var sDig = useState(null); var digest = sDig[0], setDigest = sDig[1];
+    var sDL = useState(false); var dayLoading = sDL[0], setDayLoading = sDL[1];
+    var sRoll = useState(null); var roll = sRoll[0], setRoll = sRoll[1];
+    var sRL = useState(false); var rangeLoading = sRL[0], setRangeLoading = sRL[1];
+    var sBusy = useState(""); var busyId = sBusy[0], setBusyId = sBusy[1];
+    var tzRef = useRef(tz); tzRef.current = tz;
     var dateRef = useRef(null); dateRef.current = date;
+    var building = !!(status && status.build && status.build.running);
 
-    var loadDays = useCallback(function (autoSelect) {
+    var loadList = useCallback(function () {
       return fetchJSON(API + "/digests?limit=60").then(function (r) {
-        var list = (r && r.digests) || [];
-        setDays(list);
-        if (autoSelect && !dateRef.current && list.length) setDate(list[0].date);
-        return list;
-      }).catch(function () { return []; });
+        var m = {}; (r && r.digests || []).forEach(function (d) { m[d.date] = d; });
+        setBuilt(m); return m;
+      }).catch(function () { return {}; });
     }, []);
 
-    var loadDigest = useCallback(function (d) {
-      if (!d) return;
-      setLoading(true);
-      fetchJSON(API + "/digest/" + d).then(function (r) { setDigest(r); })
-        .catch(function () { setDigest(null); })
-        .then(function () { setLoading(false); });
+    var loadDay = useCallback(function (d) {
+      setDayLoading(true);
+      return fetchJSON(API + "/digest/" + d).then(function (r) { setDigest(r); return r; })
+        .catch(function () { setDigest(null); }).then(function (r) { setDayLoading(false); return r; });
     }, []);
 
-    var triggerBuild = useCallback(function (payload) {
-      return fetchJSON(API + "/build", { method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload || {}) }).catch(function () {});
-    }, []);
-
+    // initial: status, today (instant), list, then prefill a week in the background
     useEffect(function () {
       fetchJSON(API + "/status").then(function (st) {
-        setStatus(st);
-        wasRunning.current = !!(st && st.build && st.build.running);
-        loadDays(true).then(function (list) {
-          if (!list.length && !(st && st.build && st.build.running) && !bootstrapped.current) {
-            bootstrapped.current = true;
-            triggerBuild({ days: 7 });   // today is built first and streams in within ~1s
-          }
-        });
-      }).catch(function () { loadDays(true); });
+        setStatus(st); if (st && st.timezone) setTz(st.timezone);
+      }).catch(function () {});
+      var today = "today";
+      loadDay(today).then(function (r) { if (r && r.date) setDate(r.date); });
+      loadList();
+      fetchJSON(API + "/ensure?days=7").then(function () { loadList(); }).catch(function () {});
     }, []);
 
+    // poll status for build progress + last built
     useEffect(function () {
       var iv = setInterval(function () {
         fetchJSON(API + "/status").then(function (st) {
           setStatus(st);
-          var running = !!(st && st.build && st.build.running);
-          if (running) {
-            // stream finished days into the list as they land
-            loadDays(true);
-          } else if (wasRunning.current) {
-            loadDays(true).then(function () { if (dateRef.current) loadDigest(dateRef.current); });
-          }
-          wasRunning.current = running;
+          if (st && st.build && st.build.running) loadList();
         }).catch(function () {});
-      }, 1200);
+      }, 2500);
       return function () { clearInterval(iv); };
     }, []);
 
-    useEffect(function () { if (date) loadDigest(date); }, [date]);
+    useEffect(function () { if (tab === "day" && date) loadDay(date); }, [date]);
+
+    var loadRange = useCallback(function (kind) {
+      setRangeLoading(true); setRoll(null);
+      var t = tzRef.current;
+      var to = ymd(new Date(), t);
+      var from = kind === "month" ? to.slice(0, 8) + "01" : ymd(daysAgo(6), t);
+      return fetchJSON(API + "/range?from_=" + from + "&to=" + to)
+        .then(function (r) { setRoll(r); }).catch(function () { setRoll(null); })
+        .then(function () { setRangeLoading(false); });
+    }, []);
+
+    function switchTab(t) {
+      setTab(t);
+      if (t === "week") loadRange("week");
+      else if (t === "month") loadRange("month");
+      else if (t === "day" && !digest && date) loadDay(date);
+    }
+
+    function rebuild() {
+      if (!date) return;
+      setDayLoading(true);
+      fetchJSON(API + "/digest/" + date + "?rebuild=true").then(function (r) { setDigest(r); loadList(); })
+        .catch(function () {}).then(function () { setDayLoading(false); });
+    }
 
     function resolve(id, resolution) {
       setBusyId(id);
-      fetchJSON(API + "/decisions/" + id + "/resolve", { method: "POST",
-        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ resolution: resolution }) })
-        .then(function () { triggerBuild({ date: date }); })
-        .catch(function () {}).then(function () { setBusyId(""); });
+      fetchJSON(API + "/decisions/" + id + "/resolve?resolution=" + resolution)
+        .then(function () { return fetchJSON(API + "/digest/" + date + "?rebuild=true"); })
+        .then(function (r) { setDigest(r); }).catch(function () {}).then(function () { setBusyId(""); });
     }
 
-    var building = !!(status && status.build && status.build.running);
+    // ---- day sidebar: last 14 days (client-computed), badges from built map ----
+    var dayList = [];
+    for (var i = 0; i < 14; i++) dayList.push(ymd(daysAgo(i), tz));
 
-    // sidebar (streams in)
-    var sidebar = h("div", { style: { width: "190px", flex: "0 0 190px", borderRight: "1px solid var(--color-border)", paddingRight: "0.75rem", overflowY: "auto", maxHeight: "70vh" } },
-      days.length === 0
-        ? (building
-            ? h("div", { style: { display: "flex", alignItems: "center", gap: "0.4rem", fontSize: "0.8rem", color: MUTED } },
-                h("span", { className: "brf-spinner" }), "Setting up\u2026")
-            : h("div", { style: { fontSize: "0.8rem", color: MUTED } }, "No briefings yet."))
-        : days.map(function (d) {
-            var active = d.date === date;
-            var isNew = !seenDays.current[d.date];
-            seenDays.current[d.date] = true;
-            return h("div", { key: d.date, onClick: function () { setDate(d.date); },
-              className: isNew ? "brf-day-new" : "",
-              style: { cursor: "pointer", padding: "0.4rem 0.5rem", borderRadius: "0.4rem",
-                marginBottom: "0.2rem", fontSize: "0.82rem",
-                background: active ? "var(--color-accent)" : "transparent",
-                color: active ? "var(--color-accent-foreground)" : "inherit" } },
-              h("div", { style: { fontWeight: 600 } }, d.date),
-              h("div", { style: { fontSize: "0.72rem", opacity: 0.8 } }, (d.open || 0) + " open \u00b7 " + eur(d.cost_eur)));
-          })
-    );
+    var sidebar = h("div", { style: { width: "150px", flex: "0 0 150px", borderRight: "1px solid var(--color-border)", paddingRight: "0.6rem", overflowY: "auto", maxHeight: "68vh" } },
+      dayList.map(function (d, idx) {
+        var active = d === date, b = built[d];
+        return h("div", { key: d, onClick: function () { setDate(d); }, className: "brf-card",
+          style: { cursor: "pointer", padding: "0.35rem 0.5rem", borderRadius: "0.4rem", marginBottom: "0.2rem", fontSize: "0.8rem",
+            background: active ? "var(--color-accent)" : "transparent", color: active ? "var(--color-accent-foreground)" : "inherit" } },
+          h("div", { style: { fontWeight: 600 } }, idx === 0 ? "Today" : idx === 1 ? "Yesterday" : d.slice(5)),
+          h("div", { style: { fontSize: "0.68rem", color: active ? "inherit" : MUTED } },
+            b ? ((b.open || 0) + " open \u00b7 " + eur(b.cost_eur)) : (building ? "building\u2026" : "\u2014")));
+      }));
 
-    // main panel
-    var body;
-    if (!digest && building) {
-      body = h(Generating, { build: status.build });
-    } else if (loading && !digest) {
-      body = h(Skeleton, null);
-    } else if (!digest) {
-      body = h("div", { style: { color: MUTED, fontSize: "0.85rem", paddingLeft: "1rem" } }, "No briefing selected.");
+    var dayBody;
+    if (dayLoading && !digest) dayBody = h(Skeleton);
+    else if (!digest) dayBody = h("div", { style: { paddingLeft: "1rem", color: MUTED, fontSize: "0.85rem" } }, "No briefing.");
+    else dayBody = h(DigestView, { digest: digest, building: dayLoading || building, onRebuild: rebuild, onResolve: resolve, busyId: busyId });
+
+    var content;
+    if (tab === "day") {
+      content = h("div", { style: { display: "flex", gap: "0.5rem" } }, sidebar, dayBody);
     } else {
-      var hd = digest.header || {}, cost = digest.cost || {}, sys = digest.system || {};
-      body = h("div", { key: digest.date, className: "brf-fade-in", style: { flex: 1, paddingLeft: "1rem", overflowY: "auto", maxHeight: "70vh" } },
-        h("div", { style: { display: "flex", alignItems: "baseline", gap: "0.75rem", marginBottom: "0.35rem", flexWrap: "wrap" } },
-          h("h3", { style: { margin: 0, fontSize: "1.05rem" } }, digest.date + " \u00b7 " + (hd.status || "")),
-          h("span", { style: { fontSize: "0.85rem", color: MUTED } },
-            (hd.open ? hd.open + " open" : "nothing open") + " \u00b7 " + eur(hd.cost_eur) + " / " + (cost.budget_daily || 0).toFixed(0) + " \u20ac"),
-          Button ? h(Button, { size: "sm", variant: "secondary", disabled: building,
-            onClick: function () { triggerBuild({ date: date }); } },
-            building ? h("span", null, h("span", { className: "brf-spinner", style: { marginRight: "0.35rem" } }), "Building\u2026") : "Rebuild") : null,
-          digest.generated_at ? h("span", { style: { fontSize: "0.72rem", color: MUTED } }, "built " + timeAgo(digest.generated_at)) : null),
-
-        (digest.hand && digest.hand.length)
-          ? h(Section, { title: "Needs your call" },
-              digest.hand.map(function (d) { return h(HandItem, { key: d.id, d: d, onResolve: resolve, busy: busyId === d.id }); }))
-          : h(Section, { title: "Needs your call" }, h("div", { style: { fontSize: "0.82rem", color: MUTED } }, "Nothing open.")),
-
-        Separator ? h(Separator, { style: { margin: "0.5rem 0" } }) : null,
-
-        (digest.done && digest.done.length)
-          ? h(Section, { title: "Done today" }, digest.done.map(function (it, i) {
-              var b = (it.bullets && it.bullets[0]) || it.why || "done";
-              return h("div", { key: i, style: { fontSize: "0.84rem", marginBottom: "0.25rem" } }, h("strong", null, it.title), " \u2014 ", b); }))
-          : null,
-
-        (digest.in_progress && digest.in_progress.length)
-          ? h(Section, { title: "Active" }, h("div", { style: { fontSize: "0.84rem" } },
-              digest.in_progress.map(function (t) { return t.title; }).join(", ")))
-          : null,
-
-        (digest.learned && digest.learned.length)
-          ? h(Section, { title: "Noted" }, digest.learned.map(function (l, i) {
-              return h("div", { key: i, style: { fontSize: "0.82rem", marginBottom: "0.2rem" } }, "\u2022 " + l); }))
-          : null,
-
-        h(Section, { title: "Cost" },
-          h("div", { style: { fontSize: "0.84rem" } },
-            "Today " + eur(cost.today_eur) + " / " + (cost.budget_daily || 0).toFixed(0) + " \u20ac \u00b7 " +
-            "Month " + eur(cost.month_eur) + " / " + (cost.budget_monthly || 0).toFixed(0) + " \u20ac \u00b7 " + (cost.runs || 0) + " runs"),
-          cost.caveat ? h("div", { style: { fontSize: "0.74rem", color: MUTED, marginTop: "0.2rem" } }, "\u26a0 " + cost.caveat) : null),
-
-        h(Section, { title: "System" },
-          h("div", { style: { fontSize: "0.84rem" } }, sys.stable ? "stable" : ((sys.notes || []).join(", ") || "\u2014")))
-      );
+      if (rangeLoading || !roll) content = h(Skeleton);
+      else content = h(RangeView, { roll: roll, title: tab === "month" ? "This month" : "Last 7 days" });
     }
 
     return h(Card, null,
       h(CardHeader, null, h(CardTitle, null, "Briefing")),
       h(CardContent, null,
+        h("div", { style: { display: "flex", gap: "0.4rem", marginBottom: "0.7rem" } },
+          h(TabButton, { label: "Day", active: tab === "day", onClick: function () { switchTab("day"); } }),
+          h(TabButton, { label: "Week", active: tab === "week", onClick: function () { switchTab("week"); } }),
+          h(TabButton, { label: "Month", active: tab === "month", onClick: function () { switchTab("month"); } })),
         h(StatusBar, { status: status }),
-        h("div", { style: { display: "flex", gap: "0.5rem" } }, sidebar, body))
-    );
+        content));
   }
 
   window.__HERMES_PLUGINS__.register("briefing", BriefingPage);

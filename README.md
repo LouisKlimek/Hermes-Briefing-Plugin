@@ -56,7 +56,9 @@ What gets escalated is pure, auditable event-type logic. The LLM is a compressor
 - **One digest, many renderers** — Markdown (email) and the dashboard tab render the _same_ JSON, so they never drift. Weekly/monthly are pure roll-ups of the daily digests.
 - **Cost-aware & cheap** — token→€ from `hermes insights`, against a budget bar. Task summaries are cached on `(task_id, last_event_id)` and only recomputed on new events. The AI summarizer is **off by default**; the deterministic fallback uses the `completed` summary / `blocked` reason directly.
 - **Zero runtime dependencies** — reads the board read-only (WAL-safe), talks to any OpenAI-compatible or Anthropic endpoint via stdlib only.
-- **Zero-setup first run** — open the tab and it auto-builds the last 7 days, with a live status bar that shows background builds (whether started by you or the timer) and the next scheduled build.
+- **Day / Week / Month tabs** — switch timeframes inline; the daily view has a 14-day picker, week/month are rolled-up views. Everything renders in the dashboard, nothing to download.
+- **Instant, zero-setup first run** — opening the tab builds today on demand and shows it right away (animated), then fills in recent days in the background. A live status bar shows background builds and the next scheduled run.
+- **GET-only data path** — builds, rebuilds and decision resolves all work over GET, so it stays reliable even on Hermes builds whose `fetchJSON` doesn't forward POST options.
 - **English by default** — set `language: de` for the original German labels. Verbatim agent text (block reasons, summaries) is always shown as the agent wrote it.
 - **Works without the dashboard** — a standalone CLI prints any day's briefing; email it with the bundled systemd timer.
 
@@ -196,11 +198,12 @@ Mounted at `/api/plugins/briefing/`:
 | `/digests?limit=` | GET | list of cached days (date, open, cost) |
 | `/digest/{date}?rebuild=` | GET | structured digest JSON |
 | `/render/{date}` | GET | the Markdown briefing (text/plain) |
+| `/ensure?days=N` | GET | build the last N days on demand (today first) |
 | `/status` | GET | build-in-progress state, next scheduled run, last built |
 | `/build` | POST | background build — `{"days":N}` bootstraps, `{"date":"…"}` rebuilds one day |
 | `/range?from_=&to=` | GET | weekly/monthly roll-up |
 | `/decisions` | GET | open "needs your hand" items |
-| `/decisions/{id}/resolve` | POST | body `{"resolution":"ok"\|"veto"}` |
+| `/decisions/{id}/resolve` | POST/GET | resolve a decision; GET form `?resolution=ok\|veto` for reliability |
 
 Like all Hermes plugin routes, these bypass session auth because the dashboard binds to localhost. **Do not run `hermes dashboard --host 0.0.0.0`** with this installed.
 

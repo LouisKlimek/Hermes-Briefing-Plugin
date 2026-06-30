@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import os
 import sys
-import threading
 
 # make the sibling `reports` package importable however the loader pulls us in
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -41,14 +40,14 @@ except Exception:  # CLI-only environment without fastapi
 if router is not None:
 
     @router.get("/health")
-    async def health():
+    def health():
         cfg = load_config()
         return {"ok": True, "kanban_db": str(cfg.resolved_kanban_db()),
                 "db_exists": cfg.resolved_kanban_db().exists(),
                 "llm_enabled": cfg.llm.enabled}
 
     @router.get("/schema")
-    async def schema():
+    def schema():
         src = KanbanSource(load_config())
         try:
             return src.inspect_schema()
@@ -56,27 +55,33 @@ if router is not None:
             src.close()
 
     @router.get("/digests")
-    async def digests(limit: int = 60):
+    def digests(limit: int = 60):
         store = Store(load_config())
         try:
             return {"digests": store.list_digests(limit)}
         finally:
             store.close()
 
+    # NOTE: these are sync `def` on purpose — FastAPI runs them in a threadpool,
+    # so building (which is blocking) never stalls the dashboard event loop.
+    def _resolve_date(cfg, date: str) -> str:
+        return today_str(cfg.timezone) if date in ("today", "heute") else date
+
     @router.get("/digest/{date}")
-    async def digest(date: str, rebuild: bool = False):
+    def digest(date: str, rebuild: bool = False):
         cfg = load_config()
+        date = _resolve_date(cfg, date)
         store = Store(cfg)
         try:
             cached = None if rebuild else store.get_digest(date)
         finally:
             store.close()
-        return cached or build_digest(cfg, date)
+        return cached or build_digest(cfg, date)   # build on demand
 
     @router.get("/render/{date}", response_class=PlainTextResponse)
-    async def render(date: str, rebuild: bool = False):
+    def render(date: str, rebuild: bool = False):
         cfg = load_config()
-        date = today_str(cfg.timezone) if date in ("today", "heute") else date
+        date = _resolve_date(cfg, date)
         store = Store(cfg)
         try:
             d = None if rebuild else store.get_digest(date)
@@ -86,12 +91,16 @@ if router is not None:
         return render_day(d, cfg.timezone, cfg.language)
 
     @router.get("/range")
-    async def range_(from_: str, to: str):
-        cfg = load_config()
-        return build_range(cfg, from_, to)
+    def range_(from_: str, to: str):
+        return build_range(load_config(), from_, to)   # builds missing days on demand
+
+    @router.get("/ensure")
+    def ensure(days: int = 7):
+        """Build the last `days` daily digests (today first). Safe to call on open."""
+        return build_recent(load_config(), days)
 
     @router.get("/status")
-    async def status():
+    def status():
         cfg = load_config()
         store = Store(cfg)
         try:
@@ -102,37 +111,23 @@ if router is not None:
                 "timezone": cfg.timezone}
 
     @router.post("/build")
-    async def build(body: dict = Body(default={})):
-        """Background build. {"days": N} bootstraps recent days; {"date": "..."}
-        rebuilds one day. Returns immediately; poll /status for progress."""
+    def build(body: dict = Body(default={})):
         cfg = load_config()
-        store = Store(cfg)
-        try:
-            if store.build_status().get("running"):
-                return {"started": False, "reason": "already running"}
-        finally:
-            store.close()
-
         body = body or {}
         if body.get("days"):
-            days = int(body["days"])
-            threading.Thread(target=build_recent, args=(cfg, days), daemon=True).start()
-            return {"started": True, "mode": "bootstrap", "days": days}
+            return build_recent(cfg, int(body["days"]))
         date = body.get("date") or today_str(cfg.timezone)
-        threading.Thread(target=build_digest, args=(cfg, date), daemon=True).start()
-        return {"started": True, "mode": "day", "date": date}
+        return build_digest(cfg, date)
 
     @router.get("/decisions")
-    async def decisions():
+    def decisions():
         store = Store(load_config())
         try:
             return {"decisions": store.open_decisions()}
         finally:
             store.close()
 
-    @router.post("/decisions/{decision_id}/resolve")
-    async def resolve(decision_id: str, body: dict = Body(default={})):
-        resolution = (body or {}).get("resolution", "ok")
+    def _do_resolve(decision_id: str, resolution: str):
         store = Store(load_config())
         try:
             ok = store.resolve_decision(decision_id, resolution)
@@ -141,6 +136,16 @@ if router is not None:
         if not ok:
             raise HTTPException(404, "decision not open or not found")
         return {"ok": True, "id": decision_id, "resolution": resolution}
+
+    @router.post("/decisions/{decision_id}/resolve")
+    def resolve_post(decision_id: str, body: dict = Body(default={})):
+        return _do_resolve(decision_id, (body or {}).get("resolution", "ok"))
+
+    # GET alias — some Hermes builds' fetchJSON doesn't forward POST bodies/method,
+    # so the UI uses this to resolve decisions reliably.
+    @router.get("/decisions/{decision_id}/resolve")
+    def resolve_get(decision_id: str, resolution: str = "ok"):
+        return _do_resolve(decision_id, resolution)
 
 
 # ------------------------------------------------------------------ CLI
