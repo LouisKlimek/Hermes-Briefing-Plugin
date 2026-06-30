@@ -427,16 +427,35 @@ def _to_epoch(v: Any) -> int:
         return 0
 
 
-class KanbanSource:
-    def __init__(self, cfg: Config):
+_BOARD_SEP = "\x1f"  # namespaces task ids per board so ids never collide across boards
+
+
+class _BoardSource:
+    """Reads ONE board's kanban.db. Task ids are namespaced as
+    ``slug \\x1f localid`` so several boards can be merged without collisions."""
+
+    def __init__(self, cfg: Config, path: Path, slug: str = "default"):
         self.cfg = cfg
-        self.path = cfg.resolved_kanban_db()
+        self.path = path
+        self.slug = slug
         self._conn: sqlite3.Connection | None = None
         self._cols: dict[str, dict[str, str]] = {}   # table -> {logical: actual}
         self._events_table = "task_events"
         self._tasks_table = "tasks"
         self._comments_table = "task_comments"
         self._runs_table: str | None = None
+
+    def _ns(self, localid: Any) -> str:
+        return f"{self.slug}{_BOARD_SEP}{localid}"
+
+    @staticmethod
+    def local_id(namespaced: str) -> str:
+        return namespaced.partition(_BOARD_SEP)[2] or namespaced
+
+    @staticmethod
+    def slug_of(namespaced: str) -> str:
+        head, sep, _ = namespaced.partition(_BOARD_SEP)
+        return head if sep else "default"
 
     # -- connection / introspection -------------------------------------
 
@@ -553,7 +572,7 @@ class KanbanSource:
                 payload = {"raw": payload}
             if not isinstance(payload, dict):
                 payload = {"value": payload}
-            out.append(Event(id=r["_id"], task_id=str(r["_task"]), kind=str(r["_kind"]),
+            out.append(Event(id=r["_id"], task_id=self._ns(r["_task"]), kind=str(r["_kind"]),
                              data=payload, ts=ets, run_id=r["_run"]))
         return out
 
@@ -584,8 +603,9 @@ class KanbanSource:
         out: dict[str, Task] = {}
         wanted = set(ids) if ids is not None else None
         for r in rows:
-            _id = str(r["_id"])
-            if wanted is not None and _id not in wanted:
+            _local = str(r["_id"])
+            _id = self._ns(_local)
+            if wanted is not None and _id not in wanted and _local not in wanted:
                 continue
             out[_id] = Task(id=_id, title=r["_title"] or "", status=(r["_status"] or "").lower(),
                             assignee=r["_asg"] or "", tenant=r["_ten"] or "",
@@ -636,6 +656,127 @@ class KanbanSource:
         if self._conn:
             self._conn.close()
             self._conn = None
+
+
+def discover_boards(cfg: Config) -> list[tuple[str, Path]]:
+    """All kanban DBs as (slug, path). The default board plus every named board
+    under ``<hermes_home>/kanban/boards/<slug>/kanban.db``. If ``kanban_db`` is
+    explicitly configured we honour only that (single board)."""
+    out: list[tuple[str, Path]] = []
+    seen: set[str] = set()
+
+    def add(slug: str, p: Path):
+        try:
+            rp = str(p.resolve())
+        except Exception:
+            rp = str(p)
+        if p and p.is_file() and rp not in seen:
+            seen.add(rp)
+            out.append((slug, p))
+
+    if cfg.kanban_db:                       # explicit override → single board
+        add("default", cfg.resolved_kanban_db())
+        return out or [("default", cfg.resolved_kanban_db())]
+
+    add("default", cfg.hermes_home / "kanban.db")
+    for base in (cfg.hermes_home / "kanban" / "boards",
+                 cfg.hermes_home / "boards"):
+        if base.is_dir():
+            for d in sorted(base.iterdir()):
+                if d.is_dir():
+                    add(d.name, d / "kanban.db")
+    return out
+
+
+class KanbanSource:
+    """Aggregates one or many boards behind the same interface the digest uses.
+
+    ``board=None`` (default) merges every discovered board; ``board=<slug>``
+    restricts to a single board. Task ids returned are namespaced per board, so
+    the digest never mixes two boards' tasks up."""
+
+    def __init__(self, cfg: Config, board: str | None = None):
+        self.cfg = cfg
+        self.board = None if board in (None, "", "all") else board
+        all_boards = discover_boards(cfg)
+        if self.board:
+            chosen = [(s, p) for s, p in all_boards if s == self.board]
+            if not chosen:                  # asked-for board not found → empty source
+                chosen = []
+            self._sources = [_BoardSource(cfg, p, s) for s, p in chosen]
+        else:
+            self._sources = [_BoardSource(cfg, p, s) for s, p in all_boards]
+        # always keep at least one source so /health etc. resolve a path
+        if not self._sources:
+            self._sources = [_BoardSource(cfg, cfg.resolved_kanban_db(), self.board or "default")]
+        self._by_slug = {s.slug: s for s in self._sources}
+
+    @property
+    def path(self) -> Path:
+        return self._sources[0].path if self._sources else self.cfg.resolved_kanban_db()
+
+    def _for(self, namespaced: str) -> "_BoardSource | None":
+        return self._by_slug.get(_BoardSource.slug_of(namespaced))
+
+    def fetch_events(self, start_ts: int, end_ts: int) -> list[Event]:
+        evs: list[Event] = []
+        for s in self._sources:
+            try:
+                evs.extend(s.fetch_events(start_ts, end_ts))
+            except Exception:
+                continue
+        evs.sort(key=lambda e: (e.ts, str(e.id)))
+        return evs
+
+    def fetch_tasks(self, ids: Iterable[str] | None = None) -> dict[str, Task]:
+        out: dict[str, Task] = {}
+        for s in self._sources:
+            try:
+                out.update(s.fetch_tasks(ids))
+            except Exception:
+                continue
+        return out
+
+    def fetch_comments(self, namespaced: str) -> list[dict]:
+        s = self._for(namespaced)
+        return s.fetch_comments(_BoardSource.local_id(namespaced)) if s else []
+
+    def fetch_runs(self, namespaced: str) -> list[dict]:
+        s = self._for(namespaced)
+        return s.fetch_runs(_BoardSource.local_id(namespaced)) if s else []
+
+    def task_bundle(self, task_id: str, window_events: list[Event]) -> dict:
+        evs = [e for e in window_events if e.task_id == task_id]
+        return {
+            "task_id": task_id,
+            "events": [{"kind": e.kind, "data": e.data, "ts": e.ts} for e in evs],
+            "runs": self.fetch_runs(task_id),
+            "comments": self.fetch_comments(task_id),
+            "last_event_id": max((e.id for e in evs), default=0),
+        }
+
+    def has_run_token_columns(self) -> bool:
+        return any(s.has_run_token_columns() for s in self._sources
+                   if (s.connect() or True))
+
+    def inspect_schema(self) -> dict:
+        boards = []
+        for s in self._sources:
+            try:
+                boards.append({"slug": s.slug, **s.inspect_schema()})
+            except Exception as exc:
+                boards.append({"slug": s.slug, "error": str(exc), "db_path": str(s.path)})
+        return {"board_filter": self.board or "all", "boards": boards}
+
+    def board_slugs(self) -> list[str]:
+        return [s.slug for s in self._sources]
+
+    def close(self) -> None:
+        for s in self._sources:
+            try:
+                s.close()
+            except Exception:
+                pass
 
 
 # ===================== insights_source =====================
@@ -806,9 +947,11 @@ CREATE TABLE IF NOT EXISTS decisions (
     resolution   TEXT
 );
 CREATE TABLE IF NOT EXISTS digests (
-    date         TEXT PRIMARY KEY,        -- YYYY-MM-DD (local)
+    board        TEXT NOT NULL DEFAULT 'all',
+    date         TEXT NOT NULL,           -- YYYY-MM-DD (local)
     json         TEXT NOT NULL,
-    created_at   INTEGER NOT NULL
+    created_at   INTEGER NOT NULL,
+    PRIMARY KEY (board, date)
 );
 CREATE INDEX IF NOT EXISTS idx_decisions_status ON decisions(status);
 CREATE TABLE IF NOT EXISTS build_status (
@@ -834,6 +977,15 @@ class Store:
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.execute("PRAGMA busy_timeout=5000")
         self.conn.executescript(_SCHEMA)
+        # migrate an older digests table that predates the per-board key — the
+        # digests are a rebuildable cache, so dropping is safe and simplest.
+        try:
+            cols = [r[1] for r in self.conn.execute("PRAGMA table_info(digests)")]
+            if "board" not in cols:
+                self.conn.execute("DROP TABLE IF EXISTS digests")
+                self.conn.executescript(_SCHEMA)
+        except Exception:
+            pass
         self.conn.execute("INSERT OR IGNORE INTO build_status(id,state) VALUES(1,'idle')")
         self.conn.commit()
 
@@ -926,21 +1078,24 @@ class Store:
 
     # -- digests ---------------------------------------------------------
 
-    def put_digest(self, date: str, digest: dict) -> None:
+    def put_digest(self, board: str, date: str, digest: dict) -> None:
         self.conn.execute(
-            "INSERT INTO digests(date,json,created_at) VALUES(?,?,?) "
-            "ON CONFLICT(date) DO UPDATE SET json=excluded.json, created_at=excluded.created_at",
-            (date, json.dumps(digest, ensure_ascii=False), int(time.time())),
+            "INSERT INTO digests(board,date,json,created_at) VALUES(?,?,?,?) "
+            "ON CONFLICT(board,date) DO UPDATE SET json=excluded.json, created_at=excluded.created_at",
+            (board, date, json.dumps(digest, ensure_ascii=False), int(time.time())),
         )
         self.conn.commit()
 
-    def get_digest(self, date: str) -> dict | None:
-        row = self.conn.execute("SELECT json FROM digests WHERE date=?", (date,)).fetchone()
+    def get_digest(self, board: str, date: str) -> dict | None:
+        row = self.conn.execute(
+            "SELECT json FROM digests WHERE board=? AND date=?", (board, date)
+        ).fetchone()
         return json.loads(row["json"]) if row else None
 
-    def list_digests(self, limit: int = 60) -> list[dict]:
+    def list_digests(self, board: str, limit: int = 60) -> list[dict]:
         rows = self.conn.execute(
-            "SELECT date, json FROM digests ORDER BY date DESC LIMIT ?", (limit,)
+            "SELECT date, json FROM digests WHERE board=? ORDER BY date DESC LIMIT ?",
+            (board, limit),
         ).fetchall()
         out = []
         for r in rows:
@@ -1327,9 +1482,10 @@ def _final_bucket(task_id: str, events: list) -> Optional[str]:
     return last
 
 
-def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = True) -> dict:
+def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = True,
+                 board: str = "all") -> dict:
     start_ts, end_ts, _ = day_bounds(date_str, cfg.timezone)
-    src = KanbanSource(cfg)
+    src = KanbanSource(cfg, board)
     store = Store(cfg)
     lang = cfg.language if cfg.language in _STATUS_WORD else "en"
     if mark:
@@ -1356,8 +1512,11 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = 
                 if _final_bucket(d["task_id"], events) in ("blocked", "failed", None)]
         if date_str == today_str(cfg.timezone):
             for od in store.open_decisions():
-                if od["id"] not in day_ids:
-                    hand.append(od)
+                if od["id"] in day_ids:
+                    continue
+                if board not in (None, "all") and _BoardSource.slug_of(od.get("task_id", "")) != board:
+                    continue        # other board's carry-over — not in this view
+                hand.append(od)
 
         # 2) completed today -> AI/heuristic summary. Schema-agnostic: a task is
         #    "done today" if any event this day transitions it to a done-bucket
@@ -1409,7 +1568,8 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = 
         status = (_STATUS_WORD[lang]["active"] if hand or done
                   else _STATUS_WORD[lang]["quiet"])
         digest = {
-            "date": date_str, "range": "day", "generated_at": int(time.time()),
+            "date": date_str, "range": "day", "board": board,
+            "generated_at": int(time.time()),
             "header": {"status": status, "open": len(hand),
                        "cost_eur": round(today_eur, 2), "budget_eur": cfg.budget_daily_eur},
             "hand": [_decision_view(d) for d in hand],
@@ -1418,7 +1578,7 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = 
             "decision_stats": store.decision_stats(_month_start_ts(date_str, cfg.timezone)),
         }
         if persist:
-            store.put_digest(date_str, digest)
+            store.put_digest(board, date_str, digest)
         return digest
     finally:
         if mark:
@@ -1459,7 +1619,7 @@ def _extract_learned(src: KanbanSource, events: list[Event]) -> list[str]:
     return out[:5]
 
 
-def build_recent(cfg: Config, days: int = 7) -> dict:
+def build_recent(cfg: Config, days: int = 7, board: str = "all") -> dict:
     """Build the last `days` daily digests (oldest->newest), skipping ones already
     cached except today (always refreshed). Manages the shared build status so the
     dashboard can show progress. Safe to call on first open."""
@@ -1476,10 +1636,10 @@ def build_recent(cfg: Config, days: int = 7) -> dict:
         for i, ds in enumerate(dates, 1):
             store.build_step(ds, i - 1)
             is_today = i == 1
-            if not is_today and store.get_digest(ds):
+            if not is_today and store.get_digest(board, ds):
                 skipped.append(ds)
             else:
-                build_digest(cfg, ds, mark=False)   # don't touch overall status
+                build_digest(cfg, ds, mark=False, board=board)   # don't touch overall status
                 built.append(ds)
             store.build_step(ds, i)
         store.build_finish()
@@ -1512,7 +1672,7 @@ def next_run(cfg: Config) -> dict:
     return {"epoch": int(nxt.timestamp()), "iso": nxt.isoformat(), "schedule": cfg.schedule}
 
 
-def build_range(cfg: Config, from_date: str, to_date: str) -> dict:
+def build_range(cfg: Config, from_date: str, to_date: str, board: str = "all") -> dict:
     """Roll up daily digests into a weekly/monthly view (builds missing days)."""
     z = _safe_zoneinfo(cfg.timezone)
     start = datetime.strptime(from_date, "%Y-%m-%d").replace(tzinfo=z)
@@ -1522,7 +1682,7 @@ def build_range(cfg: Config, from_date: str, to_date: str) -> dict:
     try:
         while cur <= end:
             ds = cur.strftime("%Y-%m-%d")
-            d = store.get_digest(ds) or build_digest(cfg, ds)
+            d = store.get_digest(board, ds) or build_digest(cfg, ds, board=board)
             days.append(d)
             cur += timedelta(days=1)
         cost_sum = round(sum(d["cost"]["today_eur"] for d in days), 2)
@@ -1531,7 +1691,7 @@ def build_range(cfg: Config, from_date: str, to_date: str) -> dict:
         learned = list({l for d in days for l in d.get("learned", [])})
         stats = days[-1]["decision_stats"] if days else {}
         return {
-            "range": "custom", "from": from_date, "to": to_date,
+            "range": "custom", "from": from_date, "to": to_date, "board": board,
             "generated_at": int(time.time()),
             "cost_eur": cost_sum, "done": done, "hand": hand_open,
             "learned": learned, "decision_stats": stats,
@@ -1690,8 +1850,13 @@ if router is not None:
     @router.get("/health")
     def health():
         cfg = load_config()
+        try:
+            found = discover_boards(cfg)
+        except Exception:
+            found = []
         return {"ok": True, "kanban_db": str(cfg.resolved_kanban_db()),
                 "db_exists": cfg.resolved_kanban_db().exists(),
+                "boards": [{"slug": s, "path": str(p)} for s, p in found],
                 "llm_enabled": cfg.llm.enabled}
 
     @router.get("/schema")
@@ -1703,12 +1868,22 @@ if router is not None:
             src.close()
 
     @router.get("/digests")
-    def digests(limit: int = 60):
+    def digests(limit: int = 60, board: str = "all"):
         store = Store(load_config())
         try:
-            return {"digests": store.list_digests(limit)}
+            return {"digests": store.list_digests(board, limit)}
         finally:
             store.close()
+
+    @router.get("/boards")
+    def boards():
+        """List selectable boards for the report's board picker."""
+        src = KanbanSource(load_config(), None)
+        try:
+            slugs = src.board_slugs()
+        finally:
+            src.close()
+        return {"boards": ["all"] + slugs}
 
     # NOTE: these are sync `def` on purpose — FastAPI runs them in a threadpool,
     # so building (which is blocking) never stalls the dashboard event loop.
@@ -1716,36 +1891,36 @@ if router is not None:
         return today_str(cfg.timezone) if date in ("today", "heute") else date
 
     @router.get("/digest/{date}")
-    def digest(date: str, rebuild: bool = False):
+    def digest(date: str, rebuild: bool = False, board: str = "all"):
         cfg = load_config()
         date = _resolve_date(cfg, date)
         store = Store(cfg)
         try:
-            cached = None if rebuild else store.get_digest(date)
+            cached = None if rebuild else store.get_digest(board, date)
         finally:
             store.close()
-        return cached or build_digest(cfg, date)   # build on demand
+        return cached or build_digest(cfg, date, board=board)   # build on demand
 
     @router.get("/render/{date}", response_class=PlainTextResponse)
-    def render(date: str, rebuild: bool = False):
+    def render(date: str, rebuild: bool = False, board: str = "all"):
         cfg = load_config()
         date = _resolve_date(cfg, date)
         store = Store(cfg)
         try:
-            d = None if rebuild else store.get_digest(date)
+            d = None if rebuild else store.get_digest(board, date)
         finally:
             store.close()
-        d = d or build_digest(cfg, date)
+        d = d or build_digest(cfg, date, board=board)
         return render_day(d, cfg.timezone, cfg.language)
 
     @router.get("/range")
-    def range_(from_: str, to: str):
-        return build_range(load_config(), from_, to)   # builds missing days on demand
+    def range_(from_: str, to: str, board: str = "all"):
+        return build_range(load_config(), from_, to, board=board)
 
     @router.get("/ensure")
-    def ensure(days: int = 7):
+    def ensure(days: int = 7, board: str = "all"):
         """Build the last `days` daily digests (today first). Safe to call on open."""
-        return build_recent(load_config(), days)
+        return build_recent(load_config(), days, board=board)
 
     @router.get("/status")
     def status():
@@ -1762,10 +1937,11 @@ if router is not None:
     def build(body: dict = Body(default={})):
         cfg = load_config()
         body = body or {}
+        board = body.get("board") or "all"
         if body.get("days"):
-            return build_recent(cfg, int(body["days"]))
+            return build_recent(cfg, int(body["days"]), board=board)
         date = body.get("date") or today_str(cfg.timezone)
-        return build_digest(cfg, date)
+        return build_digest(cfg, date, board=board)
 
     @router.get("/decisions")
     def decisions():

@@ -35,6 +35,10 @@
     ["briefing", "Hermes-Briefing-Plugin"].forEach(function (n) { if (c.indexOf(n) < 0) c.push(n); });
     return c;
   }
+  function addBoard(url, b) {
+    b = b || "all";
+    return url + (url.indexOf("?") >= 0 ? "&" : "?") + "board=" + encodeURIComponent(b);
+  }
   function resolveApi() {
     var cands = apiCandidates();
     return cands.reduce(function (p, name) {
@@ -222,12 +226,15 @@
     var sBusy = useState(""); var busyId = sBusy[0], setBusyId = sBusy[1];
     var sApi = useState(null); var apiBase = sApi[0], setApiBase = sApi[1];
     var apiRef = useRef(null); apiRef.current = apiBase;
+    var sBoards = useState(["all"]); var boards = sBoards[0], setBoards = sBoards[1];
+    var sBoard = useState("all"); var board = sBoard[0], setBoard = sBoard[1];
+    var boardRef = useRef("all"); boardRef.current = board;
     var tzRef = useRef(tz); tzRef.current = tz;
     var dateRef = useRef(null); dateRef.current = date;
     var building = !!(status && status.build && status.build.running);
 
     var loadList = useCallback(function () {
-      return fetchJSON(apiRef.current + "/digests?limit=60").then(function (r) {
+      return fetchJSON(addBoard(apiRef.current + "/digests?limit=60", boardRef.current)).then(function (r) {
         var m = {}; (r && r.digests || []).forEach(function (d) { m[d.date] = d; });
         setBuilt(m); return m;
       }).catch(function () { return {}; });
@@ -235,7 +242,7 @@
 
     var loadDay = useCallback(function (d) {
       setDayLoading(true);
-      return fetchJSON(apiRef.current + "/digest/" + d).then(function (r) { setDigest(r); return r; })
+      return fetchJSON(addBoard(apiRef.current + "/digest/" + d, boardRef.current)).then(function (r) { setDigest(r); return r; })
         .catch(function () { setDigest(null); }).then(function (r) { setDayLoading(false); return r; });
     }, []);
 
@@ -245,12 +252,16 @@
       }).catch(function () {});
       loadDay("today").then(function (r) { if (r && r.date) setDate(r.date); });
       loadList();
-      fetchJSON(apiRef.current + "/ensure?days=7").then(function () { loadList(); }).catch(function () {});
+      fetchJSON(addBoard(apiRef.current + "/ensure?days=7", boardRef.current)).then(function () { loadList(); }).catch(function () {});
     }
 
     // resolve which /api/plugins/<dir> base actually answers, THEN load
     useEffect(function () {
-      resolveApi().then(function (base) { apiRef.current = base; setApiBase(base); init(); });
+      resolveApi().then(function (base) {
+        apiRef.current = base; setApiBase(base);
+        fetchJSON(base + "/boards").then(function (r) { if (r && r.boards && r.boards.length) setBoards(r.boards); }).catch(function () {});
+        init();
+      });
     }, []);
 
     // poll status for build progress + last built
@@ -272,10 +283,22 @@
       var t = tzRef.current;
       var to = ymd(new Date(), t);
       var from = kind === "month" ? to.slice(0, 8) + "01" : ymd(daysAgo(6), t);
-      return fetchJSON(apiRef.current + "/range?from_=" + from + "&to=" + to)
+      return fetchJSON(addBoard(apiRef.current + "/range?from_=" + from + "&to=" + to, boardRef.current))
         .then(function (r) { setRoll(r); }).catch(function () { setRoll(null); })
         .then(function () { setRangeLoading(false); });
     }, []);
+
+    function changeBoard(b) {
+      setBoard(b); boardRef.current = b;
+      setDigest(null); setRoll(null); setBuilt({});
+      if (tab === "day") {
+        loadDay(date || "today").then(function (r) { if (r && r.date) setDate(r.date); });
+        loadList();
+        fetchJSON(addBoard(apiRef.current + "/ensure?days=7", b)).then(function () { loadList(); }).catch(function () {});
+      } else {
+        loadRange(tab);
+      }
+    }
 
     function switchTab(t) {
       setTab(t);
@@ -287,14 +310,14 @@
     function rebuild() {
       if (!date) return;
       setDayLoading(true);
-      fetchJSON(apiRef.current + "/digest/" + date + "?rebuild=true").then(function (r) { setDigest(r); loadList(); })
+      fetchJSON(addBoard(apiRef.current + "/digest/" + date + "?rebuild=true", boardRef.current)).then(function (r) { setDigest(r); loadList(); })
         .catch(function () {}).then(function () { setDayLoading(false); });
     }
 
     function resolve(id, resolution) {
       setBusyId(id);
       fetchJSON(apiRef.current + "/decisions/" + id + "/resolve?resolution=" + resolution)
-        .then(function () { return fetchJSON(apiRef.current + "/digest/" + date + "?rebuild=true"); })
+        .then(function () { return fetchJSON(addBoard(apiRef.current + "/digest/" + date + "?rebuild=true", boardRef.current)); })
         .then(function (r) { setDigest(r); }).catch(function () {}).then(function () { setBusyId(""); });
     }
 
@@ -338,7 +361,13 @@
         h("div", { style: { display: "flex", gap: "0.4rem", marginBottom: "0.7rem" } },
           h(TabButton, { label: "Day", active: tab === "day", onClick: function () { switchTab("day"); } }),
           h(TabButton, { label: "Week", active: tab === "week", onClick: function () { switchTab("week"); } }),
-          h(TabButton, { label: "Month", active: tab === "month", onClick: function () { switchTab("month"); } })),
+          h(TabButton, { label: "Month", active: tab === "month", onClick: function () { switchTab("month"); } }),
+          boards.length > 1 ? h("select", {
+            value: board, onChange: function (e) { changeBoard(e.target.value); },
+            title: "Board",
+            style: { marginLeft: "auto", border: "1px solid var(--color-border)", borderRadius: "0.4rem",
+                     background: "var(--color-card)", color: "inherit", fontSize: "0.8rem", padding: "0.2rem 0.4rem" }
+          }, boards.map(function (b) { return h("option", { key: b, value: b }, b === "all" ? "All boards" : b); })) : null),
         h(StatusBar, { status: status }),
         content));
   }
