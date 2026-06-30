@@ -1,0 +1,14 @@
+[Unit]
+Description=Hermes daily report (build + email)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+# Adjust User and paths to your install:
+User=%i
+Environment=HERMES_HOME=%h/.hermes
+# Optional: enable the AI summarizer for richer "why" lines
+# Environment=REPORTS_LLM_ENABLED=1
+# Environment=REPORTS_LLM_API_KEY=sk-...
+ExecStart=/usr/bin/python3 %h/.hermes/plugins/reports/dashboard/send_report.py

@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the Hermes daily report each evening
+
+[Timer]
+# 19:30 local time daily; tweak to taste
+OnCalendar=*-*-* 19:30:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

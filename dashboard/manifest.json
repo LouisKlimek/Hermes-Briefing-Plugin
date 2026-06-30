@@ -1,0 +1,10 @@
+{
+  "name": "briefing",
+  "label": "Briefing",
+  "description": "Daily/weekly/monthly briefings from the kanban activity: done, cost, and what needs your hand.",
+  "version": "0.1.0",
+  "icon": "BarChart3",
+  "tab": { "path": "/briefing", "position": "after:skills" },
+  "entry": "dist/index.js",
+  "api": "plugin_api.py"
+}

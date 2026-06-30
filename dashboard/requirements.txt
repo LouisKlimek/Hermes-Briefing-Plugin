@@ -1,0 +1,5 @@
+# The dashboard process already provides fastapi and pyyaml.
+# Nothing here is needed for the plugin to run inside Hermes.
+# Listed only for running the CLI / send_report.py in a bare venv:
+fastapi>=0.110
+PyYAML>=6.0

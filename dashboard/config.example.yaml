@@ -1,0 +1,59 @@
+# Hermes Reports — optional config.
+# Copy to  ~/.hermes/reports/config.yaml  and edit. Everything is optional;
+# env vars (REPORTS_*) override these. Delete anything you don't need.
+
+timezone: Europe/Berlin
+language: de
+
+budget:
+  daily_eur: 15
+  monthly_eur: 400
+
+# € per 1,000,000 tokens, matched by substring against the model name.
+# !!! VERIFY against your provider's current prices — these are placeholders. !!!
+pricing:
+  gpt-5.5:
+    input: 1.10
+    output: 9.00
+  _default:
+    input: 1.00
+    output: 5.00
+
+# A `blocked` event whose reason contains one of these -> "needs your hand".
+approval_keywords:
+  - review-required
+  - freigabe
+  - boss
+  - approval
+  - wartet auf
+  - dein ok
+
+# Flag a task as unstable after this many protocol_violation events in a window.
+protocol_violation_alert_threshold: 2
+
+# AI summarizer — OFF by default to stay cheap. Turn on for richer "why" lines.
+llm:
+  enabled: false
+  provider: openai          # openai (OpenAI-compatible) | anthropic
+  base_url: https://api.openai.com/v1
+  model: gpt-5.5-mini
+  api_key: ""               # or set REPORTS_LLM_API_KEY / OPENAI_API_KEY
+  max_tokens: 120
+  temperature: 0.1
+
+# Email delivery (used by send_report.py). Leave host empty to just print.
+smtp:
+  host: ""
+  port: 587
+  user: ""
+  password: ""
+  starttls: true
+  sender: ""
+  recipient: ""
+
+# Only needed if PRAGMA auto-detection picks the wrong column. Run
+# `python plugin_api.py inspect-schema` first, then override here, e.g.:
+# schema:
+#   event_kind: kind
+#   event_data: data
+#   event_ts: created_at
