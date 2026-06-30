@@ -6,5 +6,5 @@
   "icon": "BarChart3",
   "tab": { "path": "/briefing", "position": "after:skills" },
   "entry": "dist/index.js",
-  "api": "plugin_api.py"
+  "css": "dist/style.css"
 }

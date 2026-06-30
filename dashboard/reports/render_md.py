@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 LABELS = {
     "en": {
-        "open": "open", "hand": "YOUR CALL", "log": "LOG",
+        "open": "open", "nothing_open": "nothing open", "hand": "YOUR CALL", "log": "LOG",
         "done": "Done", "wip": "Active", "noted": "Noted",
         "cost": "Cost", "system": "System", "stable": "stable",
         "all_clear": " · all clear", "near": "  ← near budget limit",
@@ -22,7 +22,7 @@ LABELS = {
                  "failed": "Gave up", "instability": "Unstable"},
     },
     "de": {
-        "open": "offen", "hand": "DEINE HAND", "log": "PROTOKOLL",
+        "open": "offen", "nothing_open": "nichts offen", "hand": "DEINE HAND", "log": "PROTOKOLL",
         "done": "Fertig", "wip": "In Arbeit", "noted": "Notiert",
         "cost": "Kosten", "system": "System", "stable": "stabil",
         "all_clear": " · alles in Ordnung", "near": "  ← knapp am Limit",
@@ -48,7 +48,8 @@ def render_day(digest: dict, tz: str = "Europe/Berlin", lang: str = "en") -> str
     dd = datetime.strptime(date, "%Y-%m-%d").strftime("%d.%m") if date else date
 
     open_n = h["open"]
-    head = f"{dd} · {h['status']} · {open_n} {L['open']} · ≈ {cost['today_eur']:.2f} € / {cost['budget_daily']:.0f} €"
+    open_str = f"{open_n} {L['open']}" if open_n else L["nothing_open"]
+    head = f"{dd} · {h['status']} · {open_str} · ≈ {cost['today_eur']:.2f} € / {cost['budget_daily']:.0f} €"
 
     if not digest["hand"] and not digest["done"]:
         tail = L["all_clear"] if digest["system"]["stable"] else ""

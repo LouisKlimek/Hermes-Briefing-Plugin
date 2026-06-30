@@ -14,9 +14,15 @@ from __future__ import annotations
 import json
 import re
 import subprocess
+import time
 from dataclasses import dataclass, field
 
 from .config import Config
+
+# short-lived memo so a 7-day bootstrap doesn't shell out to `hermes insights`
+# 14+ times — the daily window repeats and results barely change minute to minute
+_USAGE_CACHE: dict[int, tuple[float, "Usage"]] = {}
+_USAGE_TTL = 120.0
 
 
 @dataclass
@@ -63,6 +69,15 @@ def _parse_text(out: str) -> Usage:
 
 
 def fetch_usage(cfg: Config, days: int) -> Usage:
+    hit = _USAGE_CACHE.get(days)
+    if hit and (time.time() - hit[0]) < _USAGE_TTL:
+        return hit[1]
+    usage = _fetch_usage_uncached(cfg, days)
+    _USAGE_CACHE[days] = (time.time(), usage)
+    return usage
+
+
+def _fetch_usage_uncached(cfg: Config, days: int) -> Usage:
     raw = _run(days, json_flag=True)
     if raw:
         try:

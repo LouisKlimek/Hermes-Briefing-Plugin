@@ -14,25 +14,27 @@ Companion to **[Hermes TaskList](https://github.com/LouisKlimek/Hermes-Tasklist-
 ## The briefing
 
 ```text
-26.06 · läuft · 1 offen · ≈ 12.40 € / 15 €
+26.06 · active · 1 open · ≈ 12.40 € / 15 €
 
-▸ DEINE HAND
-  • Freigabe nötig: QS-Wissensbasis
-    review-required: B-Wortlaut wartet auf BOSS-Freigabe. A geschrieben, C erledigt.
+▸ YOUR CALL
+  • Needs approval: QS knowledge base
+    review-required: wording B is waiting on your sign-off. A written, C done.
 
-▸ PROTOKOLL
-  Fertig    Foodtruck-Events sammeln — craftplaces als zuverlässigste Quelle bestätigt
-  In Arbeit Standplatz-Vermittlung
-  Notiert   Foodtrucker buchen meist < 3 Tage vorher
-  Kosten    heute ≈12.40 €/15 € · Monat ≈210 €/400 € · 47 Runs  ← knapp am Limit
-  System    stabil
+▸ LOG
+  Done      Collect food-truck events — craftplaces confirmed as the most reliable source
+  Active    Pitch-spot matching
+  Noted     Food-truck owners usually book < 3 days ahead
+  Cost      today ≈12.40 €/15 € · month ≈210 €/400 € · 47 runs  ← near budget limit
+  System    stable
 ```
 
 A quiet day collapses to a single line:
 
 ```text
-26.06 · ruhig · nichts offen · ≈ 4.00 € / 15 € · alles in Ordnung
+26.06 · quiet · nothing open · ≈ 4.00 € / 15 € · all clear
 ```
+
+> Verbatim agent text (block reasons, summaries) is shown exactly as the agent wrote it, in whatever language your agents work in. Everything Briefing generates around it is English by default (`language: de` for German).
 
 ---
 
@@ -42,14 +44,14 @@ A mostly-autonomous agent system produces a firehose of events. You don't want t
 
 > **Rules decide what reaches your hand. The AI only ever shortens the wording.**
 
-What gets escalated is pure, auditable event-type logic. The LLM is a compressor, not a judge — so you can trust the `▸ DEINE HAND` section.
+What gets escalated is pure, auditable event-type logic. The LLM is a compressor, not a judge — so you can trust the `▸ YOUR CALL` section.
 
 ---
 
 ## Features
 
 - **Attention-first layout** — `DEINE HAND` (needs a decision) vs. `PROTOKOLL` (for the record), exactly how you'd triage the board yourself.
-- **Deterministic escalation** — `blocked` + an approval keyword → _Freigabe nötig_; `gave_up` / `timed_out` → _Aufgegeben_; repeated `protocol_violation` → _Instabil_. No AI in the decision path.
+- **Deterministic escalation** — `blocked` + an approval keyword → _Needs approval_; `gave_up` / `timed_out` → _Gave up_; repeated `protocol_violation` → _Unstable_. No AI in the decision path.
 - **Stateful decisions** — an open item persists across days until you give **OK**, **veto** it, or its deadline passes — that's the `1 offen` counter. Resolve straight from the dashboard.
 - **One digest, many renderers** — Markdown (email) and the dashboard tab render the _same_ JSON, so they never drift. Weekly/monthly are pure roll-ups of the daily digests.
 - **Cost-aware & cheap** — token→€ from `hermes insights`, against a budget bar. Task summaries are cached on `(task_id, last_event_id)` and only recomputed on new events. The AI summarizer is **off by default**; the deterministic fallback uses the `completed` summary / `blocked` reason directly.

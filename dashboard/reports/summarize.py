@@ -132,7 +132,7 @@ def summarize_task(bundle: dict, cfg: Config, store: Store) -> dict:
     result = _fallback(bundle, cfg.language)
     if cfg.llm.enabled and cfg.llm.api_key:
         try:
-            prompt = f"Aufgabe {task_id}. Aktivität:\n{_compact_bundle(bundle)}"
+            prompt = f"Task {task_id}. Activity:\n{_compact_bundle(bundle)}"
             raw = _call_anthropic(cfg, prompt) if cfg.llm.provider == "anthropic" else _call_openai(cfg, prompt)
             parsed = _parse_json(raw)
             result = {

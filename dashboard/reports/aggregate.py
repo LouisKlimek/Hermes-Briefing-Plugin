@@ -7,7 +7,7 @@ so the heavy work (event diff + summarize) happens once per day.
 Digest shape:
 {
   "date": "2026-06-26", "range": "day", "generated_at": 1750000000,
-  "header": {"status": "läuft"|"ruhig", "open": int, "cost_eur": float, "budget_eur": float},
+  "header": {"status": "active"|"quiet", "open": int, "cost_eur": float, "budget_eur": float},
   "hand":   [ {kind, title, detail, task_id, deadline} ],        # needs your hand
   "in_progress": [ {task_id, title, status} ],
   "done":   [ {task_id, title, bullets:[...], why} ],
@@ -121,7 +121,7 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = 
         # 6) learned (optional, lightweight: pull short comment lines tagged as notes)
         learned = _extract_learned(src, events)
 
-        status = (_STATUS_WORD[lang]["active"] if hand or done or in_progress
+        status = (_STATUS_WORD[lang]["active"] if hand or done
                   else _STATUS_WORD[lang]["quiet"])
         digest = {
             "date": date_str, "range": "day", "generated_at": int(time.time()),
@@ -180,22 +180,23 @@ def build_recent(cfg: Config, days: int = 7) -> dict:
     dashboard can show progress. Safe to call on first open."""
     z = ZoneInfo(cfg.timezone)
     today = datetime.now(z).date()
-    dates = [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days - 1, -1, -1)]
+    # newest first: today, yesterday, ... so the most relevant briefing shows first
+    dates = [(today - timedelta(days=i)).strftime("%Y-%m-%d") for i in range(days)]
     store = Store(cfg)
     built, skipped = [], []
     try:
         if store.build_status().get("running"):
             return {"started": False, "reason": "already running", **store.build_status()}
-        store.build_begin("Setting up — building recent briefings", len(dates))
+        store.build_begin("Today", len(dates))
         for i, ds in enumerate(dates, 1):
-            store.build_step(f"{ds} ({i}/{len(dates)})", i - 1)
-            is_today = ds == dates[-1]
+            store.build_step(ds, i - 1)
+            is_today = i == 1
             if not is_today and store.get_digest(ds):
                 skipped.append(ds)
             else:
                 build_digest(cfg, ds, mark=False)   # don't touch overall status
                 built.append(ds)
-            store.build_step(f"{ds} ({i}/{len(dates)})", i)
+            store.build_step(ds, i)
         store.build_finish()
         return {"started": True, "built": built, "skipped": skipped}
     except Exception as e:  # pragma: no cover

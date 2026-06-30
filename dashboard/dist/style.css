@@ -1,0 +1,63 @@
+/* Hermes Briefing — animations. Theme-aware via the dashboard's CSS vars. */
+
+@keyframes brf-spin { to { transform: rotate(360deg); } }
+@keyframes brf-shimmer { 0% { background-position: -420px 0; } 100% { background-position: 420px 0; } }
+@keyframes brf-fade-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+@keyframes brf-pop-in { 0% { opacity: 0; transform: translateX(-8px); } 100% { opacity: 1; transform: none; } }
+@keyframes brf-indeterminate { 0% { left: -42%; } 100% { left: 100%; } }
+@keyframes brf-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .4; } }
+@keyframes brf-glow { 0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-ring, #888) 35%, transparent); } 50% { box-shadow: 0 0 0 6px transparent; } }
+
+.brf-spinner {
+  width: 16px; height: 16px; border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--color-border, #888) 70%, transparent);
+  border-top-color: var(--color-primary, var(--color-accent-foreground, #888));
+  animation: brf-spin .8s linear infinite; display: inline-block; vertical-align: middle;
+}
+.brf-spinner-lg { width: 26px; height: 26px; border-width: 3px; }
+
+.brf-fade-in { animation: brf-fade-in .35s ease both; }
+.brf-pop-in { animation: brf-pop-in .3s ease both; }
+
+.brf-skel {
+  position: relative; overflow: hidden; border-radius: 6px;
+  background: color-mix(in srgb, var(--color-muted-foreground, #888) 18%, transparent);
+}
+.brf-skel::after {
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent,
+    color-mix(in srgb, var(--color-foreground, #fff) 14%, transparent), transparent);
+  background-size: 420px 100%; animation: brf-shimmer 1.25s infinite;
+}
+
+.brf-progress {
+  position: relative; height: 6px; border-radius: 999px; overflow: hidden;
+  background: color-mix(in srgb, var(--color-muted-foreground, #888) 22%, transparent);
+}
+.brf-progress-fill {
+  height: 100%; border-radius: 999px; transition: width .5s cubic-bezier(.4,0,.2,1);
+  background: linear-gradient(90deg,
+    var(--color-primary, var(--color-accent-foreground, #888)),
+    color-mix(in srgb, var(--color-primary, #888) 70%, var(--color-ring, #aaa)));
+}
+.brf-progress-indeterminate::before {
+  content: ""; position: absolute; top: 0; bottom: 0; width: 42%; border-radius: 999px;
+  background: var(--color-primary, var(--color-accent-foreground, #888));
+  animation: brf-indeterminate 1.1s ease-in-out infinite;
+}
+
+.brf-pulse { animation: brf-pulse 1.4s ease-in-out infinite; }
+.brf-glow { animation: brf-glow 1.8s ease-in-out infinite; }
+
+/* gentle highlight when a brand-new day streams into the list */
+.brf-day-new { animation: brf-pop-in .3s ease both; }
+
+/* resolve buttons: subtle lift */
+.brf-card { transition: transform .15s ease, box-shadow .15s ease; }
+.brf-card:hover { transform: translateY(-1px); }
+
+@media (prefers-reduced-motion: reduce) {
+  .brf-spinner, .brf-skel::after, .brf-progress-indeterminate::before,
+  .brf-pulse, .brf-glow { animation: none !important; }
+  .brf-fade-in, .brf-pop-in, .brf-day-new { animation: none !important; }
+}
