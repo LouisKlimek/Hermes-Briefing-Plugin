@@ -53,9 +53,46 @@
 
   var KIND_LABEL = { approval: "Needs approval", blocked: "Blocked", failed: "Gave up", instability: "Unstable" };
   var KIND_TONE = { approval: "default", blocked: "secondary", failed: "destructive", instability: "destructive" };
+  // Palette is only a FALLBACK. Real colors are auto-discovered from the kanban
+  // DB via /colors and stored in KANBAN_COLORS (canon status name -> color).
+  var STATUS_COLORS = {
+    approval: "#eab308", blocked: "#f97316", failed: "#ef4444", instability: "#ef4444",
+    violation: "#a855f7", done: "#22c55e", active: "#3b82f6", running: "#3b82f6",
+    todo: "#9ca3af", ready: "#9ca3af"
+  };
+  var KANBAN_COLORS = {};
+  var KIND_TO_STATUS = {
+    blocked: ["blocked"],
+    approval: ["blocked", "ready", "approval", "review"],
+    failed: ["failed", "error", "gave_up", "blocked"],
+    instability: ["failed", "blocked"],
+    violation: ["blocked", "failed"],
+    done: ["done", "completed", "complete", "archived"],
+    active: ["in_progress", "running", "claimed", "active", "doing"],
+    todo: ["todo", "ready", "triage", "scheduled", "backlog", "new"]
+  };
+  function kanbanColorFor(kind) {
+    var k = (kind || "").toLowerCase();
+    var cands = KIND_TO_STATUS[k] || [k];
+    for (var i = 0; i < cands.length; i++) { if (KANBAN_COLORS[cands[i]]) return KANBAN_COLORS[cands[i]]; }
+    return null;
+  }
+  function statusColor(kind) {
+    return kanbanColorFor(kind) || STATUS_COLORS[(kind || "").toLowerCase()] || "#9ca3af";
+  }
+  function colorChrome(c) {
+    var isHex = /^#([0-9a-fA-F]{6})$/.test(c);
+    return { color: c, background: isHex ? c + "22" : "transparent", border: "1px solid " + (isHex ? c + "77" : c) };
+  }
+  function StatusBadge(props) {
+    var ch = colorChrome(statusColor(props.kind));
+    return h("span", { style: Object.assign({
+      display: "inline-block", fontSize: "0.64rem", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em",
+      padding: "0.14rem 0.5rem", borderRadius: "999px", whiteSpace: "nowrap" }, ch) }, props.label);
+  }
   var MUTED = "var(--color-muted-foreground)";
 
-  function eur(n) { return "\u2248 " + (Number(n) || 0).toFixed(2) + " \u20ac"; }
+  function eur(n) { return "\u2248 $" + (Number(n) || 0).toFixed(2); }
   function ymd(d, tz) {
     try { return new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(d); }
     catch (e) { return d.toISOString().slice(0, 10); }
@@ -133,7 +170,7 @@
         border: "1px solid var(--color-border)", borderRadius: "var(--radius, 0.5rem)",
         padding: "0.6rem 0.75rem", marginBottom: "0.5rem", background: "var(--color-card)" } },
       h("div", { style: { display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.25rem" } },
-        Badge ? h(Badge, { variant: KIND_TONE[d.kind] || "default" }, KIND_LABEL[d.kind] || d.kind) : null,
+        h(StatusBadge, { kind: d.kind, label: KIND_LABEL[d.kind] || d.kind }),
         h("strong", { style: { fontSize: "0.9rem" } }, d.title)),
       d.detail ? h("div", { style: { fontSize: "0.8rem", color: MUTED, marginBottom: "0.4rem" } }, d.detail) : null,
       h("div", { style: { display: "flex", gap: "0.6rem", alignItems: "center" } },
@@ -184,6 +221,25 @@
 
   function boardOf(taskId) { var i = (taskId || "").indexOf("::"); return i >= 0 ? taskId.slice(0, i) : ""; }
 
+  function BudgetBar(props) {
+    var used = Number(props.used) || 0, budget = Number(props.budget) || 0;
+    var ratio = budget > 0 ? used / budget : 0;
+    var pct = Math.max(0, Math.min(100, Math.round(ratio * 100)));
+    var col = ratio >= 0.9 ? "#ef4444" : ratio >= 0.7 ? "#f59e0b" : "#22c55e";
+    var col2 = ratio >= 0.9 ? "#f87171" : ratio >= 0.7 ? "#fbbf24" : "#4ade80";
+    return h("div", { style: { marginBottom: "0.55rem" } },
+      h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "0.25rem" } },
+        h("span", { style: { fontSize: "0.72rem", color: MUTED, textTransform: "uppercase", letterSpacing: "0.05em" } }, props.label),
+        h("span", { style: { fontSize: "0.78rem" } },
+          eur(used) + " / $" + budget.toFixed(0),
+          h("span", { style: { marginLeft: "0.45rem", fontWeight: 700, color: col } }, pct + "%"))),
+      h("div", { style: { height: "9px", borderRadius: "999px", background: "var(--color-muted, rgba(127,127,127,0.18))", overflow: "hidden" } },
+        h("div", { style: { height: "100%", width: pct + "%", borderRadius: "999px",
+          background: "linear-gradient(90deg," + col + "," + col2 + ")",
+          boxShadow: "0 0 8px " + col + "66",
+          transition: "width .6s cubic-bezier(.4,0,.2,1)" } })));
+  }
+
   // Readable Done view: cards in a responsive grid, grouped by board when more
   // than one board is present. Long "why" text is clamped to keep cards even.
   function DoneGrid(props) {
@@ -198,7 +254,7 @@
           groups[b].map(function (it, i) {
             var why = (it.bullets && it.bullets[0]) || it.why || "";
             var t = ticketHref(it.task_id, props.target);
-            return h("div", { key: i, className: "brf-card", style: { display: "flex", flexDirection: "column", border: "1px solid var(--color-border)", borderRadius: "0.55rem", padding: "0.6rem 0.75rem", background: "var(--color-card)" } },
+            return h("div", { key: i, className: "brf-card", style: { display: "flex", flexDirection: "column", border: "1px solid var(--color-border)", borderLeft: "3px solid " + statusColor("done"), borderRadius: "0.55rem", padding: "0.6rem 0.75rem", background: "var(--color-card)" } },
               h("div", { style: { fontSize: "0.86rem", fontWeight: 600, lineHeight: 1.35, marginBottom: why ? "0.35rem" : "0.4rem" } }, it.title),
               why ? h("div", { style: { fontSize: "0.78rem", color: MUTED, lineHeight: 1.5, marginBottom: "0.5rem", display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" } }, why) : null,
               it.task_id ? h("a", { href: t.url, style: { marginTop: "auto", alignSelf: "flex-start", fontSize: "0.74rem", fontWeight: 600, textDecoration: "none", color: "inherit", border: "1px solid var(--color-border)", borderRadius: "0.4rem", padding: "0.1rem 0.5rem" } }, "Open ticket \u2192") : null);
@@ -213,7 +269,7 @@
       h("div", { style: { display: "flex", alignItems: "baseline", gap: "0.75rem", marginBottom: "0.35rem", flexWrap: "wrap" } },
         h("h3", { style: { margin: 0, fontSize: "1.05rem" } }, digest.date + " \u00b7 " + (hd.status || "")),
         h("span", { style: { fontSize: "0.85rem", color: MUTED } },
-          (hd.open ? hd.open + " open" : "nothing open") + " \u00b7 " + eur(hd.cost_eur) + " / " + (cost.budget_daily || 0).toFixed(0) + " \u20ac"),
+          (hd.open ? hd.open + " open" : "nothing open") + " \u00b7 " + eur(hd.cost_eur) + " / $" + (cost.budget_daily || 0).toFixed(0)),
         Button ? h(Button, { size: "sm", variant: "secondary", disabled: building, onClick: props.onRebuild },
           building ? h("span", null, h(Spinner, { style: { marginRight: "0.35rem" } }), "Building\u2026") : "Rebuild") : null,
         digest.generated_at ? h("span", { style: { fontSize: "0.72rem", color: MUTED } }, "built " + timeAgo(digest.generated_at)) : null),
@@ -232,26 +288,31 @@
             h("div", { style: { display: "flex", flexWrap: "wrap", gap: "0.35rem" } },
               digest.in_progress.map(function (t, i) {
                 var th = ticketHref(t.task_id, props.target);
-                return h("a", { key: i, href: th.url, style: { fontSize: "0.78rem", textDecoration: "none", color: "inherit", padding: "0.15rem 0.5rem", border: "1px solid var(--color-border)", borderRadius: "999px", background: "var(--color-card)" } }, t.title); })))
+                var ach = colorChrome(statusColor("active"));
+                return h("a", { key: i, href: th.url, style: Object.assign({ fontSize: "0.78rem", textDecoration: "none", padding: "0.15rem 0.5rem", borderRadius: "999px" }, ach) }, t.title); })))
         : null,
       (digest.learned && digest.learned.length)
         ? h(Section, { title: "Insights (" + digest.learned.length + ")" }, h(LearnedCards, { items: digest.learned, target: props.target }))
         : null,
       h(Section, { title: "Cost" },
-        h("div", { style: { fontSize: "0.84rem" } },
-          "Today " + eur(cost.today_eur) + " / " + (cost.budget_daily || 0).toFixed(0) + " \u20ac \u00b7 Month " + eur(cost.month_eur) + " / " + (cost.budget_monthly || 0).toFixed(0) + " \u20ac \u00b7 " + (cost.runs || 0) + " runs"),
+        h(BudgetBar, { label: "Today", used: cost.today_eur, budget: cost.budget_daily }),
+        h(BudgetBar, { label: "This month", used: cost.month_eur, budget: cost.budget_monthly }),
+        h("div", { style: { fontSize: "0.76rem", color: MUTED } }, (cost.runs || 0) + " runs"),
         cost.caveat ? h("div", { style: { fontSize: "0.74rem", color: MUTED, marginTop: "0.2rem" } }, "\u26a0 " + cost.caveat) : null),
       h(Section, { title: "System" }, h("div", { style: { fontSize: "0.84rem" } }, sys.stable ? "stable" : ((sys.notes || []).join(", ") || "\u2014"))));
   }
 
   function RangeView(props) {
-    var r = props.roll, title = props.title;
+    var r = props.roll, title = props.title, period = props.period || "week";
     var st = r.decision_stats || {};
+    var periodBudget = period === "month"
+      ? (r.budget_monthly || ((r.budget_daily || 0) * (r.num_days || 30)))
+      : ((r.budget_daily || 0) * (r.num_days || 7));
     return h("div", { className: "brf-fade-in", style: { flex: 1, padding: "0 0.5rem", overflowY: "auto", maxHeight: "68vh" } },
       h("h3", { style: { margin: "0 0 0.1rem", fontSize: "1.05rem" } }, title),
       h("div", { style: { fontSize: "0.8rem", color: MUTED, marginBottom: "0.8rem" } }, r.from + " \u2013 " + r.to),
-      h("div", { style: { display: "flex", gap: "1.5rem", flexWrap: "wrap", marginBottom: "0.4rem" } },
-        stat("Cost", eur(r.cost_eur)),
+      h(BudgetBar, { label: period === "month" ? "Month budget" : "Week budget", used: r.cost_eur, budget: periodBudget }),
+      h("div", { style: { display: "flex", gap: "1.5rem", flexWrap: "wrap", marginBottom: "0.4rem", marginTop: "0.4rem" } },
         stat("Done", (r.done ? r.done.length : 0) + " tasks"),
         stat("Still open", (r.hand ? r.hand.length : 0) + ""),
         stat("Decisions", (st.total || 0) + " \u00b7 " + (st.vetoed || 0) + " vetoed \u00b7 " + (st.open || 0) + " open")),
@@ -316,8 +377,11 @@
     var boardRef = useRef("all"); boardRef.current = board;
     var sTB = useState({ path: "/kanban", kind: "kanban" }); var ticketBase = sTB[0], setTicketBase = sTB[1];
     var sHist = useState(null); var historyFirst = sHist[0], setHistoryFirst = sHist[1];
+    var sCV = useState(0); var colorsV = sCV[0], setColorsV = sCV[1];
     var sMonth = useState(null); var monthCursor = sMonth[0], setMonthCursor = sMonth[1];
     var monthRef = useRef(null); monthRef.current = monthCursor;
+    var sWeek = useState(null); var weekCursor = sWeek[0], setWeekCursor = sWeek[1];
+    var weekRef = useRef(null); weekRef.current = weekCursor;
     var tzRef = useRef(tz); tzRef.current = tz;
     var dateRef = useRef(null); dateRef.current = date;
     var building = !!(status && status.build && status.build.running);
@@ -352,10 +416,17 @@
       });
     }, []);
 
+    function loadColors(b) {
+      fetchJSON(addBoard(apiRef.current + "/colors", b)).then(function (r) {
+        if (r && r.status_colors) { KANBAN_COLORS = r.status_colors; setColorsV(function (v) { return v + 1; }); }
+      }).catch(function () {});
+    }
+
     function init() {
       fetchJSON(apiRef.current + "/status").then(function (st) {
         setStatus(st); if (st && st.timezone) setTz(st.timezone);
       }).catch(function () {});
+      loadColors(boardRef.current);
       loadDay("today").then(function (r) { if (r && r.date) setDate(r.date); });
       loadList();
       loadHistoryAndEnsure(boardRef.current);
@@ -385,6 +456,11 @@
 
     useEffect(function () { if (tab === "day" && date) loadDay(date); }, [date]);
 
+    function addDaysStr(s, n) {
+      var d = new Date(s + "T12:00:00Z"); d.setUTCDate(d.getUTCDate() + n);
+      return d.toISOString().slice(0, 10);
+    }
+
     var loadRange = useCallback(function (kind) {
       setRangeLoading(true); setRoll(null);
       var t = tzRef.current;
@@ -397,7 +473,11 @@
         var monthEnd = mc.slice(0, 8) + ("0" + lastDay).slice(-2);
         to = monthEnd > to ? to : monthEnd;   // cap current month at today
       } else {
-        from = ymd(daysAgo(6), t);
+        var wc = weekRef.current || ymd(new Date(), t);
+        var today0 = ymd(new Date(), t);
+        if (wc > today0) wc = today0;
+        to = wc;
+        from = addDaysStr(wc, -6);
       }
       return fetchJSON(addBoard(apiRef.current + "/range?from_=" + from + "&to=" + to, boardRef.current))
         .then(function (r) { setRoll(r); }).catch(function () { setRoll(null); })
@@ -414,9 +494,19 @@
       loadRange("month");
     }
 
+    function shiftWeek(delta) {
+      var today0 = ymd(new Date(), tzRef.current);
+      var base = weekRef.current || today0;
+      var nc = addDaysStr(base, delta * 7);
+      if (nc > today0) nc = today0;
+      setWeekCursor(nc); weekRef.current = nc;
+      loadRange("week");
+    }
+
     function changeBoard(b) {
       setBoard(b); boardRef.current = b;
       setDigest(null); setRoll(null); setBuilt({}); setHistoryFirst(null);
+      loadColors(b);
       loadHistoryAndEnsure(b);
       if (tab === "day") {
         loadDay(date || "today").then(function (r) { if (r && r.date) setDate(r.date); });
@@ -428,8 +518,10 @@
 
     function switchTab(t) {
       setTab(t);
-      if (t === "week") loadRange("week");
-      else if (t === "month") {
+      if (t === "week") {
+        if (!weekRef.current) { var cw = ymd(new Date(), tzRef.current); setWeekCursor(cw); weekRef.current = cw; }
+        loadRange("week");
+      } else if (t === "month") {
         if (!monthRef.current) {
           var cm = ymd(new Date(), tzRef.current).slice(0, 8) + "01";
           setMonthCursor(cm); monthRef.current = cm;
@@ -483,7 +575,7 @@
       content = h("div", { style: { display: "flex", gap: "0.5rem" } }, sidebar, dayBody);
     } else {
       var rangeBody = (rangeLoading || !roll) ? h(Skeleton)
-        : h(RangeView, { roll: roll, title: tab === "month" ? "Month" : "Last 7 days", target: ticketBase });
+        : h(RangeView, { roll: roll, title: tab === "month" ? "Month" : "Week", target: ticketBase, period: tab });
       var nav = null;
       if (tab === "month") {
         var curMonth = ymd(new Date(), tz).slice(0, 7);
@@ -493,6 +585,15 @@
           Button ? h(Button, { size: "sm", variant: "secondary", onClick: function () { shiftMonth(-1); } }, "\u2190 Prev") : null,
           h("strong", { style: { fontSize: "0.95rem", minWidth: "5.5rem", textAlign: "center" } }, shown),
           Button ? h(Button, { size: "sm", variant: "secondary", disabled: atCurrent, onClick: function () { if (!atCurrent) shiftMonth(1); } }, "Next \u2192") : null);
+      } else if (tab === "week") {
+        var today0 = ymd(new Date(), tz);
+        var wc = weekCursor || today0;
+        var wfrom = addDaysStr(wc, -6);
+        var atNow = wc >= today0;
+        nav = h("div", { style: { display: "flex", alignItems: "center", gap: "0.6rem", marginBottom: "0.5rem" } },
+          Button ? h(Button, { size: "sm", variant: "secondary", onClick: function () { shiftWeek(-1); } }, "\u2190 Prev") : null,
+          h("strong", { style: { fontSize: "0.9rem", minWidth: "9rem", textAlign: "center" } }, wfrom.slice(5) + " \u2013 " + wc.slice(5)),
+          Button ? h(Button, { size: "sm", variant: "secondary", disabled: atNow, onClick: function () { if (!atNow) shiftWeek(1); } }, "Next \u2192") : null);
       }
       content = h("div", null, nav, rangeBody);
     }

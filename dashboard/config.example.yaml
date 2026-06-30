@@ -14,7 +14,7 @@ budget:
   daily_eur: 15
   monthly_eur: 400
 
-# € per 1,000,000 tokens, matched by substring against the model name.
+# $ (USD) per 1,000,000 tokens, matched by substring against the model name.
 # !!! VERIFY against your provider's current prices — these are placeholders. !!!
 pricing:
   gpt-5.5:

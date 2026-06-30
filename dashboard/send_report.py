@@ -54,9 +54,9 @@ def main(argv: list[str]) -> int:
     digest = build_digest(cfg, date)
     body = render_day(digest, cfg.timezone, cfg.language)
     if cfg.language == "de":
-        subject = f"Tagesbericht {date} · {digest['header']['open']} offen · ≈{digest['header']['cost_eur']:.2f} €"
+        subject = f"Tagesbericht {date} · {digest['header']['open']} offen · ≈${digest['header']['cost_eur']:.2f}"
     else:
-        subject = f"Briefing {date} · {digest['header']['open']} open · ≈{digest['header']['cost_eur']:.2f} €"
+        subject = f"Briefing {date} · {digest['header']['open']} open · ≈${digest['header']['cost_eur']:.2f}"
 
     if stdout_only or not (cfg.smtp.host and cfg.smtp.recipient):
         if not stdout_only:

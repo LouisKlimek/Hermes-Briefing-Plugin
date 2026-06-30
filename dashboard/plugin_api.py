@@ -88,7 +88,7 @@ def _hermes_home() -> Path:
     return Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")).expanduser()
 
 
-# Default € price per 1,000,000 tokens, keyed by model name (substring match).
+# Default $ (USD) price per 1,000,000 tokens, keyed by model name (substring match).
 # !!! VERIFY against your provider's current pricing — these are placeholders. !!!
 DEFAULT_PRICING: dict[str, dict[str, float]] = {
     "gpt-5.5":   {"input": 1.10, "output": 9.00},
@@ -406,6 +406,40 @@ def _any_text(d: Any, extra: tuple = ()) -> str:
     return best
 
 
+def _looks_like_color(v: Any) -> bool:
+    if not isinstance(v, str):
+        return False
+    s = v.strip().lower()
+    if not s:
+        return False
+    return (s.startswith("#") or s.startswith("rgb") or s.startswith("hsl")
+            or bool(re.match(r"^[a-z]+$", s)))   # named css color
+
+
+def _harvest_json_colors(text: Any, out: dict) -> None:
+    """Walk a JSON string (or fragment) collecting {name/label/status: color}."""
+    if not isinstance(text, str) or "color" not in text.lower():
+        return
+    try:
+        data = json.loads(text)
+    except Exception:
+        return
+
+    def walk(obj):
+        if isinstance(obj, dict):
+            nm = (obj.get("name") or obj.get("label") or obj.get("status")
+                  or obj.get("title") or obj.get("key") or obj.get("id") or obj.get("slug"))
+            col = obj.get("color") or obj.get("colour") or obj.get("hex")
+            if nm and _looks_like_color(col):
+                out.setdefault(_canon(nm), col.strip())
+            for v in obj.values():
+                walk(v)
+        elif isinstance(obj, list):
+            for v in obj:
+                walk(v)
+    walk(data)
+
+
 def _to_epoch(v: Any) -> int:
     if v is None:
         return 0
@@ -652,6 +686,50 @@ class _BoardSource:
         c = self._cols.get("runs", {})
         return bool(c.get("run_in_tok") or c.get("run_out_tok") or c.get("run_cost"))
 
+    def status_colors(self) -> dict:
+        """Best-effort discovery of the board's per-status/column colors, so the
+        report can mirror the kanban instead of hard-coding hues. Looks for a
+        table with a color column + a name/status column, and also parses any
+        JSON config cell that carries name/color pairs. Returns {canon_name: color}."""
+        self.connect()
+        out: dict = {}
+        try:
+            tables = [r[0] for r in self._conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'")]
+        except Exception:
+            return out
+        # scan status/column-ish tables first to avoid unrelated 'color' columns
+        def rank(t):
+            tl = t.lower()
+            return 0 if any(k in tl for k in ("column", "lane", "status", "stage", "list", "board")) else 1
+        for tbl in sorted(tables, key=rank):
+            try:
+                cols = [r[1] for r in self._conn.execute(f'PRAGMA table_info("{tbl}")')]
+            except Exception:
+                continue
+            low = {c.lower(): c for c in cols}
+            color_col = next((c for c in cols if "color" in c.lower() or "colour" in c.lower() or c.lower() == "hex"), None)
+            label_col = next((low[p] for p in ("name", "label", "title", "status", "key", "slug", "column", "lane", "stage") if p in low), None)
+            # (a) structured color column
+            if color_col and label_col:
+                try:
+                    for r in self._conn.execute(f'SELECT "{label_col}","{color_col}" FROM "{tbl}"').fetchall():
+                        nm, col = _canon(r[0]), r[1]
+                        if nm and _looks_like_color(col):
+                            out.setdefault(nm, col.strip())
+                except Exception:
+                    pass
+            # (b) JSON config blobs (board/column config stored as text)
+            for c in cols:
+                try:
+                    rows = self._conn.execute(
+                        f'SELECT "{c}" FROM "{tbl}" WHERE "{c}" LIKE \'%color%\' LIMIT 50').fetchall()
+                except Exception:
+                    continue
+                for r in rows:
+                    _harvest_json_colors(r[0], out)
+        return out
+
     def event_ts_bounds(self) -> "tuple[int, int] | None":
         """(earliest, latest) event epoch in this board, or None if no events."""
         self.connect()
@@ -805,6 +883,16 @@ class KanbanSource:
                 mx = b[1] if mx is None else max(mx, b[1])
         return (mn, mx)
 
+    def status_colors(self) -> dict:
+        out: dict = {}
+        for s in self._sources:
+            try:
+                for k, v in s.status_colors().items():
+                    out.setdefault(k, v)
+            except Exception:
+                continue
+        return out
+
     def close(self) -> None:
         for s in self._sources:
             try:
@@ -927,7 +1015,7 @@ def _price_for(model: str, pricing: dict) -> dict:
 
 
 def estimate_cost_eur(usage: Usage, cfg: Config) -> float:
-    """Approximate € cost. Marked '≈' wherever it is rendered."""
+    """Approximate $ (USD) cost. Marked '≈' wherever it is rendered."""
     pricing = cfg.pricing
     # Prefer the input/output split applied at the dominant model's price.
     if usage.input_tokens or usage.output_tokens:
@@ -1763,6 +1851,8 @@ def build_range(cfg: Config, from_date: str, to_date: str, board: str = "all") -
             "range": "custom", "from": from_date, "to": to_date, "board": board,
             "generated_at": int(time.time()),
             "cost_eur": cost_sum, "done": done, "hand": hand_open,
+            "budget_daily": cfg.budget_daily_eur, "budget_monthly": cfg.budget_monthly_eur,
+            "num_days": len(days),
             "learned": learned, "decision_stats": stats,
             "days": [{"date": d["date"], "cost": d["cost"]["today_eur"],
                       "done": len(d["done"]), "open": len(d["hand"])} for d in days],
@@ -1822,7 +1912,7 @@ def render_day(digest: dict, tz: str = "Europe/Berlin", lang: str = "en") -> str
 
     open_n = h["open"]
     open_str = f"{open_n} {L['open']}" if open_n else L["nothing_open"]
-    head = f"{dd} · {h['status']} · {open_str} · ≈ {cost['today_eur']:.2f} € / {cost['budget_daily']:.0f} €"
+    head = f"{dd} · {h['status']} · {open_str} · ≈ ${cost['today_eur']:.2f} / ${cost['budget_daily']:.0f}"
 
     if not digest["hand"] and not digest["done"]:
         tail = L["all_clear"] if digest["system"]["stable"] else ""
@@ -1859,8 +1949,8 @@ def render_day(digest: dict, tz: str = "Europe/Berlin", lang: str = "en") -> str
     cd = cost["today_eur"] / cost["budget_daily"] if cost["budget_daily"] else 0
     near = L["near"] if cd >= 0.8 else ""
     lines.append(
-        f"  {L['cost']:<9} {L['today']} ≈{cost['today_eur']:.2f} €/{cost['budget_daily']:.0f} € · "
-        f"{L['month']} ≈{cost['month_eur']:.2f} €/{cost['budget_monthly']:.0f} € · {cost['runs']} {L['runs']}{near}"
+        f"  {L['cost']:<9} {L['today']} ≈${cost['today_eur']:.2f}/${cost['budget_daily']:.0f} · "
+        f"{L['month']} ≈${cost['month_eur']:.2f}/${cost['budget_monthly']:.0f} · {cost['runs']} {L['runs']}{near}"
     )
     if cost.get("caveat"):
         lines.append(f"            ⚠ {cost['caveat']}")
@@ -1877,7 +1967,7 @@ def render_range(roll: dict, title: str | None = None, lang: str = "en") -> str:
     L = _L(lang)
     title = title or L["report"]
     lines = [f"{title} · {roll['from']} – {roll['to']}", ""]
-    lines.append(f"  {L['cost']:<9} ≈ {roll['cost_eur']:.2f} € total")
+    lines.append(f"  {L['cost']:<9} ≈ ${roll['cost_eur']:.2f} total")
     lines.append(f"  {L['done']:<9} {len(roll['done'])} tasks")
     st = roll.get("decision_stats", {})
     if st:
@@ -1955,6 +2045,17 @@ if router is not None:
         finally:
             src.close()
         return {"boards": ["all"] + slugs}
+
+    @router.get("/colors")
+    def colors(board: str = "all"):
+        """Per-status colors auto-discovered from the kanban DB so report badges
+        match the board. Empty if none found (UI then uses its own palette)."""
+        cfg = load_config()
+        src = KanbanSource(cfg, None if board in (None, "", "all") else board)
+        try:
+            return {"status_colors": src.status_colors()}
+        finally:
+            src.close()
 
     @router.get("/history")
     def history(board: str = "all"):

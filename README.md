@@ -14,7 +14,7 @@ Companion to **[Hermes TaskList](https://github.com/LouisKlimek/Hermes-Tasklist-
 ## The briefing
 
 ```text
-26.06 · active · 1 open · ≈ 12.40 € / 15 €
+26.06 · active · 1 open · ≈ $12.40 / $15
 
 ▸ YOUR CALL
   • Needs approval: QS knowledge base
@@ -24,14 +24,14 @@ Companion to **[Hermes TaskList](https://github.com/LouisKlimek/Hermes-Tasklist-
   Done      Collect food-truck events — craftplaces confirmed as the most reliable source
   Active    Pitch-spot matching
   Noted     Food-truck owners usually book < 3 days ahead
-  Cost      today ≈12.40 €/15 € · month ≈210 €/400 € · 47 runs  ← near budget limit
+  Cost      today ≈$12.40/$15 · month ≈$210/$400 · 47 runs  ← near budget limit
   System    stable
 ```
 
 A quiet day collapses to a single line:
 
 ```text
-26.06 · quiet · nothing open · ≈ 4.00 € / 15 € · all clear
+26.06 · quiet · nothing open · ≈ $4.00 / $15 · all clear
 ```
 
 > Verbatim agent text (block reasons, summaries) is shown exactly as the agent wrote it, in whatever language your agents work in. Everything Briefing generates around it is English by default (`language: de` for German).
@@ -54,7 +54,7 @@ What gets escalated is pure, auditable event-type logic. The LLM is a compressor
 - **Deterministic escalation** — `blocked` + an approval keyword → _Needs approval_; `gave_up` / `timed_out` → _Gave up_; repeated `protocol_violation` → _Unstable_. No AI in the decision path.
 - **Stateful decisions** — an open item persists across days until you give **OK**, **veto** it, or its deadline passes — that's the `1 offen` counter. Resolve straight from the dashboard.
 - **One digest, many renderers** — Markdown (email) and the dashboard tab render the _same_ JSON, so they never drift. Weekly/monthly are pure roll-ups of the daily digests.
-- **Cost-aware & cheap** — token→€ from `hermes insights`, against a budget bar. Task summaries are cached on `(task_id, last_event_id)` and only recomputed on new events. The AI summarizer is **off by default**; the deterministic fallback uses the `completed` summary / `blocked` reason directly.
+- **Cost-aware & cheap** — token→$ from `hermes insights`, against a budget bar. Task summaries are cached on `(task_id, last_event_id)` and only recomputed on new events. The AI summarizer is **off by default**; the deterministic fallback uses the `completed` summary / `blocked` reason directly.
 - **Zero runtime dependencies** — reads the board read-only (WAL-safe), talks to any OpenAI-compatible or Anthropic endpoint via stdlib only.
 - **Day / Week / Month tabs** — switch timeframes inline; the daily view has a 14-day picker, week/month are rolled-up views. Everything renders in the dashboard, nothing to download.
 - **Instant, zero-setup first run** — opening the tab builds today on demand and shows it right away (animated), then fills in recent days in the background. A live status bar shows background builds and the next scheduled run.
@@ -82,7 +82,7 @@ A thin read-only layer over the existing board, plus its own small overlay DB fo
         │   • event diff over the day's window                 │
         │   • escalate()  → deterministic "needs your hand"    │
         │   • summarize() → cheap LLM/heuristic, cached        │
-        │   • insights    → tokens × price = ≈ €               │
+        │   • insights    → tokens × price = ≈ $               │
         └───────┬───────────────────────────────────┬─────────┘
                 │ read-only (mode=ro)                │ overlay
                 ▼                                    ▼
@@ -182,7 +182,7 @@ Everything is optional and lives in `~/.hermes/briefing/config.yaml`; `REPORTS_*
 | Key | What it does |
 | --- | --- |
 | `budget.daily_eur` / `monthly_eur` | Drives the budget bar and the `← knapp am Limit` flag. |
-| `pricing` | € per 1M tokens per model. **Verify against your provider** — defaults are placeholders, so cost is rendered with `≈`. |
+| `pricing` | $ (USD) per 1M tokens per model. **Verify against your provider** — defaults are placeholders, so cost is rendered with `≈`. |
 | `approval_keywords` | Substrings in a `blocked` reason that mean "a human must decide". German + English defaults included. |
 | `protocol_violation_alert_threshold` | Flag a task as _Instabil_ after this many violations in a window. |
 | `schedule` | Local `HH:MM` times your timer/cron runs — drives the "next build" hint in the dashboard. |
