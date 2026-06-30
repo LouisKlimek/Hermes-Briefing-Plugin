@@ -94,8 +94,11 @@ Task edits are never written to the board — Briefing only reads it. The only s
 ## Install
 
 ```bash
-git clone https://github.com/LouisKlimek/Hermes-Briefing-Plugin.git ~/.hermes/plugins/briefing
+# clone into your plugins dir; the target folder "briefing" keeps API URLs clean
+git clone https://github.com/LouisKlimek/Hermes-Briefing-Plugin.git <PLUGINS_DIR>/briefing
 ```
+> `<PLUGINS_DIR>` is your install's plugin folder — `~/.hermes/plugins` on a normal install, or e.g. `/opt/data/plugins` in some Docker images. Find it with `find / -name manifest.json -path "*dashboard*"`. The plugin **auto-detects its own API mount path** from where the dashboard serves it, so it works regardless of the folder name (clone-named, `briefing`, anything) — naming it `briefing` just keeps the URLs tidy.
+
 
 Final layout (the standard Hermes plugin contract — a `dashboard/` subfolder):
 

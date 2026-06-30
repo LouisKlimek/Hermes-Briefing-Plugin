@@ -13,7 +13,39 @@
   var Badge = C.Badge, Button = C.Button, Separator = C.Separator;
   var fetchJSON = SDK.fetchJSON;
   var timeAgo = (SDK.utils && SDK.utils.timeAgo) || function (t) { return new Date(t * 1000).toLocaleString(); };
-  var API = "/api/plugins/briefing";
+
+  // The dashboard mounts a plugin's API under its INSTALL DIRECTORY name
+  // (/api/plugins/<dir>/), and serves this bundle from /dashboard-plugins/<dir>/dist/.
+  // So we derive the base from our own <script src> and verify it with /health —
+  // that way the plugin works no matter what the install folder is called
+  // (briefing, Hermes-Briefing-Plugin, a git-clone name, anything).
+  function apiCandidates() {
+    var c = [];
+    try {
+      var scripts = document.querySelectorAll("script[src]");
+      for (var i = 0; i < scripts.length; i++) {
+        var m = (scripts[i].src || "").match(/\/dashboard-plugins\/([^\/]+)\//);
+        if (m && c.indexOf(m[1]) < 0) c.push(m[1]);
+      }
+      if (document.currentScript && document.currentScript.src) {
+        var m2 = document.currentScript.src.match(/\/dashboard-plugins\/([^\/]+)\//);
+        if (m2 && c.indexOf(m2[1]) < 0) c.push(m2[1]);
+      }
+    } catch (e) {}
+    ["briefing", "Hermes-Briefing-Plugin"].forEach(function (n) { if (c.indexOf(n) < 0) c.push(n); });
+    return c;
+  }
+  function resolveApi() {
+    var cands = apiCandidates();
+    return cands.reduce(function (p, name) {
+      return p.then(function (found) {
+        if (found) return found;
+        return fetchJSON("/api/plugins/" + name + "/health")
+          .then(function () { return "/api/plugins/" + name; })
+          .catch(function () { return null; });
+      });
+    }, Promise.resolve(null)).then(function (found) { return found || "/api/plugins/" + cands[0]; });
+  }
 
   var KIND_LABEL = { approval: "Needs approval", blocked: "Blocked", failed: "Gave up", instability: "Unstable" };
   var KIND_TONE = { approval: "default", blocked: "secondary", failed: "destructive", instability: "destructive" };
@@ -188,12 +220,14 @@
     var sRoll = useState(null); var roll = sRoll[0], setRoll = sRoll[1];
     var sRL = useState(false); var rangeLoading = sRL[0], setRangeLoading = sRL[1];
     var sBusy = useState(""); var busyId = sBusy[0], setBusyId = sBusy[1];
+    var sApi = useState(null); var apiBase = sApi[0], setApiBase = sApi[1];
+    var apiRef = useRef(null); apiRef.current = apiBase;
     var tzRef = useRef(tz); tzRef.current = tz;
     var dateRef = useRef(null); dateRef.current = date;
     var building = !!(status && status.build && status.build.running);
 
     var loadList = useCallback(function () {
-      return fetchJSON(API + "/digests?limit=60").then(function (r) {
+      return fetchJSON(apiRef.current + "/digests?limit=60").then(function (r) {
         var m = {}; (r && r.digests || []).forEach(function (d) { m[d.date] = d; });
         setBuilt(m); return m;
       }).catch(function () { return {}; });
@@ -201,25 +235,29 @@
 
     var loadDay = useCallback(function (d) {
       setDayLoading(true);
-      return fetchJSON(API + "/digest/" + d).then(function (r) { setDigest(r); return r; })
+      return fetchJSON(apiRef.current + "/digest/" + d).then(function (r) { setDigest(r); return r; })
         .catch(function () { setDigest(null); }).then(function (r) { setDayLoading(false); return r; });
     }, []);
 
-    // initial: status, today (instant), list, then prefill a week in the background
-    useEffect(function () {
-      fetchJSON(API + "/status").then(function (st) {
+    function init() {
+      fetchJSON(apiRef.current + "/status").then(function (st) {
         setStatus(st); if (st && st.timezone) setTz(st.timezone);
       }).catch(function () {});
-      var today = "today";
-      loadDay(today).then(function (r) { if (r && r.date) setDate(r.date); });
+      loadDay("today").then(function (r) { if (r && r.date) setDate(r.date); });
       loadList();
-      fetchJSON(API + "/ensure?days=7").then(function () { loadList(); }).catch(function () {});
+      fetchJSON(apiRef.current + "/ensure?days=7").then(function () { loadList(); }).catch(function () {});
+    }
+
+    // resolve which /api/plugins/<dir> base actually answers, THEN load
+    useEffect(function () {
+      resolveApi().then(function (base) { apiRef.current = base; setApiBase(base); init(); });
     }, []);
 
     // poll status for build progress + last built
     useEffect(function () {
       var iv = setInterval(function () {
-        fetchJSON(API + "/status").then(function (st) {
+        if (!apiRef.current) return;
+        fetchJSON(apiRef.current + "/status").then(function (st) {
           setStatus(st);
           if (st && st.build && st.build.running) loadList();
         }).catch(function () {});
@@ -234,7 +272,7 @@
       var t = tzRef.current;
       var to = ymd(new Date(), t);
       var from = kind === "month" ? to.slice(0, 8) + "01" : ymd(daysAgo(6), t);
-      return fetchJSON(API + "/range?from_=" + from + "&to=" + to)
+      return fetchJSON(apiRef.current + "/range?from_=" + from + "&to=" + to)
         .then(function (r) { setRoll(r); }).catch(function () { setRoll(null); })
         .then(function () { setRangeLoading(false); });
     }, []);
@@ -249,14 +287,14 @@
     function rebuild() {
       if (!date) return;
       setDayLoading(true);
-      fetchJSON(API + "/digest/" + date + "?rebuild=true").then(function (r) { setDigest(r); loadList(); })
+      fetchJSON(apiRef.current + "/digest/" + date + "?rebuild=true").then(function (r) { setDigest(r); loadList(); })
         .catch(function () {}).then(function () { setDayLoading(false); });
     }
 
     function resolve(id, resolution) {
       setBusyId(id);
-      fetchJSON(API + "/decisions/" + id + "/resolve?resolution=" + resolution)
-        .then(function () { return fetchJSON(API + "/digest/" + date + "?rebuild=true"); })
+      fetchJSON(apiRef.current + "/decisions/" + id + "/resolve?resolution=" + resolution)
+        .then(function () { return fetchJSON(apiRef.current + "/digest/" + date + "?rebuild=true"); })
         .then(function (r) { setDigest(r); }).catch(function () {}).then(function () { setBusyId(""); });
     }
 
@@ -286,6 +324,12 @@
     } else {
       if (rangeLoading || !roll) content = h(Skeleton);
       else content = h(RangeView, { roll: roll, title: tab === "month" ? "This month" : "Last 7 days" });
+    }
+
+    if (!apiBase) {
+      return h(Card, null,
+        h(CardHeader, null, h(CardTitle, null, "Briefing")),
+        h(CardContent, null, h("div", { style: { display: "flex", alignItems: "center", gap: "0.5rem", color: MUTED, fontSize: "0.85rem" } }, h(Spinner), "Connecting\u2026")));
     }
 
     return h(Card, null,
