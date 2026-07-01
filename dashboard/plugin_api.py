@@ -258,7 +258,7 @@ dispatcher's writers (the board runs in WAL mode).
 
 import json
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Iterable
 
@@ -1971,6 +1971,34 @@ def _final_bucket(task_id: str, events: list) -> Optional[str]:
     return last
 
 
+def _event_status(e) -> Optional[str]:
+    """Best-effort raw status/column a status-bearing event moves a task INTO."""
+    d = e.data if isinstance(e.data, dict) else {}
+    for k in ("to", "to_status", "new_status", "to_column", "column", "status", "state"):
+        v = d.get(k)
+        if v:
+            return str(v)
+    kb = _canon(e.kind)
+    for word in ("blocked", "completed", "done", "review", "ready", "running",
+                 "scheduled", "archived", "triage", "todo", "failed"):
+        if word in kb:
+            return word
+    return None
+
+
+def _status_as_of(task_id: str, events: list) -> Optional[str]:
+    """The task's raw status as of the END of the given (windowed) events —
+    i.e. its state on that report's day, ignoring any later changes."""
+    best, best_ts = None, -1
+    for e in events:
+        if e.task_id != task_id:
+            continue
+        s = _event_status(e)
+        if s is not None and e.ts >= best_ts:
+            best, best_ts = s, e.ts
+    return best
+
+
 _AGENT_HINTS = ("orchestrator", "agent", "worker", "curator", "ceo", "cto", "cpo", "bot")
 _TH_HANG = int(os.environ.get("REPORTS_HANG_HOURS", "48") or 48)
 _TH_LATENCY = int(os.environ.get("REPORTS_LATENCY_HOURS", "12") or 12)
@@ -2281,6 +2309,26 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = 
         events = src.fetch_events(start_ts, end_ts)
         tasks = src.fetch_tasks()  # snapshot of current statuses
 
+        # For historical rebuilds, reconstruct each task's status AS OF THIS DAY
+        # from the full event history up to end-of-day, so lights/KPIs/pills show
+        # the real state then — not a status the task only reached later.
+        is_today = (date_str == today_str(cfg.timezone))
+        day_status: dict = {}
+        if not is_today:
+            try:
+                for e in sorted(src.fetch_events(0, end_ts), key=lambda ev: ev.ts):
+                    s = _event_status(e)
+                    if s:
+                        day_status[e.task_id] = s
+            except Exception:
+                day_status = {}
+        # day-accurate task view (status overridden where we could reconstruct it)
+        if day_status:
+            view_tasks = {tid: (replace(t, status=day_status[tid]) if tid in day_status else t)
+                          for tid, t in tasks.items()}
+        else:
+            view_tasks = tasks
+
         # 1) escalation. Persist to the live decision store (for the current
         #    "what's open now" view), but the per-day report is a HISTORICAL
         #    record: `hand` = what was escalated THAT day, even if the task has
@@ -2320,11 +2368,29 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = 
                     hand.append({"id": f"{tid}:{kind}", "task_id": tid, "kind": kind,
                                  "title": t.title, "detail": detail, "deadline": None,
                                  "status": t.status})
-        # color/label by the task's real kanban status where we have it
+        # Color each pill by the status the task had ON THIS DAY, so a rebuilt
+        # historical briefing shows the real state then — not a later "done".
+        #  • today        -> live kanban status (exact, incl. custom columns)
+        #  • past day      -> status reconstructed from events up to end-of-day
+        #  • approval kind -> always its semantic gold (it's a derived state)
+        #  • fallback      -> unset, so the frontend colors by escalation kind
         for d in hand:
-            t = tasks.get(d.get("task_id"))
-            if t and t.status:
-                d["status"] = t.status
+            if d.get("kind") == "approval":
+                d.pop("status", None)
+                continue
+            tid = d.get("task_id")
+            if is_today:
+                t = tasks.get(tid)
+                if t and t.status:
+                    d["status"] = t.status
+                else:
+                    d.pop("status", None)
+            else:
+                sa = day_status.get(tid) or _status_as_of(tid, events)
+                if sa:
+                    d["status"] = sa
+                else:
+                    d.pop("status", None)
 
         # 2) completed today -> AI/heuristic summary. Schema-agnostic: a task is
         #    "done today" if any event this day transitions it to a done-bucket
@@ -2380,9 +2446,9 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = 
         models = build_models(runs_window, pmeta)
 
         # 8) Part-1 overview + 12-point verification layer
-        overview = build_overview(cfg, date_str, board, events, tasks, runs_window,
+        overview = build_overview(cfg, date_str, board, events, view_tasks, runs_window,
                                   hand, learned, cost, src.board_slugs(), start_ts, end_ts, pmeta)
-        verification = run_verification(cfg, date_str, src, events, tasks, pmeta,
+        verification = run_verification(cfg, date_str, src, events, view_tasks, pmeta,
                                         runs_window, hand, cost, system)
 
         status = (_STATUS_WORD[lang]["active"] if hand or done
