@@ -53,24 +53,68 @@
 
   var KIND_LABEL = { approval: "Needs approval", blocked: "Blocked", failed: "Gave up", instability: "Unstable" };
   var KIND_TONE = { approval: "default", blocked: "secondary", failed: "destructive", instability: "destructive" };
-  // Palette is only a FALLBACK. Real colors are auto-discovered from the kanban
-  // DB via /colors and stored in KANBAN_COLORS (canon status name -> color).
+  // The kanban board's colors live in ITS stylesheet as .hermes-kanban-dot-<status>
+  // rules. We fetch and parse that CSS at runtime (see loadKanbanCss) into
+  // KANBAN_CSS_COLORS so the briefing always tracks the real board colors — even
+  // across CSS updates. STATUS_COLORS below is only an offline fallback and is
+  // kept in sync with the current kanban CSS values.
+  var KANBAN_CSS_COLORS = {};
   var STATUS_COLORS = {
-    approval: "#eab308", blocked: "#f97316", failed: "#ef4444", instability: "#ef4444",
-    violation: "#a855f7", done: "#22c55e", active: "#3b82f6", running: "#3b82f6",
-    todo: "#9ca3af", ready: "#9ca3af"
+    triage: "#b47dd6", todo: "#9ca3af", scheduled: "#818cf8", ready: "#d4b348",
+    running: "#3fb97d", blocked: "#d14a4a", review: "#c084fc", done: "#4a8cd1", archived: "#6b7280",
+    // derived / bucket aliases used by the briefing:
+    approval: "#d4b348", failed: "#d14a4a", instability: "#d14a4a", violation: "#c084fc",
+    active: "#3fb97d", completed: "#4a8cd1", complete: "#4a8cd1", "in_progress": "#3fb97d",
+    error: "#d14a4a", gave_up: "#d14a4a", new: "#9ca3af", backlog: "#9ca3af"
   };
   var KANBAN_COLORS = {};
   var KIND_TO_STATUS = {
     blocked: ["blocked"],
-    approval: ["blocked", "ready", "approval", "review"],
-    failed: ["failed", "error", "gave_up", "blocked"],
-    instability: ["failed", "blocked"],
-    violation: ["blocked", "failed"],
+    approval: ["ready", "review", "blocked"],
+    failed: ["blocked", "archived"],
+    instability: ["blocked"],
+    violation: ["review", "blocked"],
     done: ["done", "completed", "complete", "archived"],
-    active: ["in_progress", "running", "claimed", "active", "doing"],
+    active: ["running", "in_progress", "review", "claimed", "doing"],
     todo: ["todo", "ready", "triage", "scheduled", "backlog", "new"]
   };
+
+  // Build the URL(s) to the kanban plugin's stylesheet, derived from our own
+  // <script src> so it survives reverse-proxy prefixes and custom install dirs.
+  function kanbanCssUrls() {
+    var urls = [];
+    try {
+      var scripts = document.querySelectorAll("script[src]");
+      for (var i = 0; i < scripts.length; i++) {
+        var src = scripts[i].src || "";
+        var idx = src.indexOf("/dashboard-plugins/");
+        if (idx >= 0) {
+          var u = src.slice(0, idx) + "/dashboard-plugins/kanban/dist/style.css";
+          if (urls.indexOf(u) < 0) urls.push(u);
+        }
+      }
+    } catch (e) {}
+    ["/dashboard-plugins/kanban/dist/style.css"].forEach(function (u) { if (urls.indexOf(u) < 0) urls.push(u); });
+    return urls;
+  }
+  function parseKanbanCss(text) {
+    var map = {}, re = /\.hermes-kanban-dot-([a-z0-9_]+)\s*\{[^}]*?background\s*:\s*([^;}]+)[;}]/gi, m;
+    while ((m = re.exec(text))) { map[canonStatus(m[1])] = m[2].trim(); }
+    return map;
+  }
+  function loadKanbanCss(bump) {
+    var urls = kanbanCssUrls();
+    (function tryNext(i) {
+      if (i >= urls.length) return;
+      fetch(urls[i]).then(function (r) { return r.ok ? r.text() : Promise.reject(); })
+        .then(function (t) {
+          var map = parseKanbanCss(t);
+          if (Object.keys(map).length) { KANBAN_CSS_COLORS = map; if (bump) bump(); }
+          else tryNext(i + 1);
+        })
+        .catch(function () { tryNext(i + 1); });
+    })(0);
+  }
   function canonStatus(s) { return String(s || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, ""); }
   function kanbanColorFor(kind) {
     var k = (kind || "").toLowerCase();
@@ -78,13 +122,25 @@
     for (var i = 0; i < cands.length; i++) { if (KANBAN_COLORS[cands[i]]) return KANBAN_COLORS[cands[i]]; }
     return null;
   }
-  // Prefer the task's REAL kanban status color; fall back to a kind mapping,
-  // then to the built-in palette. Works for any custom status set.
+  // Resolution order: live kanban CSS (authoritative, tracks board updates) →
+  // offline palette → DB-discovered custom colors → kind mapping. Values may be
+  // raw CSS (hex OR var(--token)); both resolve correctly inline in the dashboard.
   function resolveColor(status, kind) {
-    if (status) { var c = KANBAN_COLORS[canonStatus(status)]; if (c) return c; }
-    var kc = kanbanColorFor(kind || status); if (kc) return kc;
-    if (status && STATUS_COLORS[canonStatus(status)]) return STATUS_COLORS[canonStatus(status)];
-    return STATUS_COLORS[(kind || "").toLowerCase()] || "#9ca3af";
+    if (status) {
+      var cs = canonStatus(status);
+      if (KANBAN_CSS_COLORS[cs]) return KANBAN_CSS_COLORS[cs];
+      if (STATUS_COLORS[cs]) return STATUS_COLORS[cs];
+      if (KANBAN_COLORS[cs]) return KANBAN_COLORS[cs];
+    }
+    var kc = kanbanCssColorFor(kind) || kanbanColorFor(kind || status); if (kc) return kc;
+    if (kind && STATUS_COLORS[canonStatus(kind)]) return STATUS_COLORS[canonStatus(kind)];
+    return "#71717a";
+  }
+  function kanbanCssColorFor(kind) {
+    var k = (kind || "").toLowerCase();
+    var cands = KIND_TO_STATUS[k] || [k];
+    for (var i = 0; i < cands.length; i++) { if (KANBAN_CSS_COLORS[cands[i]]) return KANBAN_CSS_COLORS[cands[i]]; }
+    return null;
   }
   function statusColor(kind) { return resolveColor(null, kind); }
   function colorChrome(c) {
@@ -236,7 +292,7 @@
       h("div", { style: { fontSize: "1.15rem", fontWeight: 700, color: color || "inherit", lineHeight: 1.1 } }, val),
       h("div", { style: { fontSize: "0.62rem", textTransform: "uppercase", letterSpacing: "0.05em", color: MUTED } }, label));
   }
-  function lightColor(light) { return light === "blocked" ? resolveColor("blocked", "blocked") : light === "waiting" ? resolveColor("todo", "todo") : resolveColor("done", "done"); }
+  function lightColor(light) { return light === "blocked" ? "#d14a4a" : light === "waiting" ? "#d4b348" : "#3fb97d"; }
   function lightWord(light) { return light === "blocked" ? "blocked" : light === "waiting" ? "waiting" : "on track"; }
 
   function Overview(props) {
@@ -528,6 +584,7 @@
         setStatus(st); if (st && st.timezone) setTz(st.timezone);
       }).catch(function () {});
       loadColors(boardRef.current);
+      loadKanbanCss(function () { setColorsV(function (v) { return v + 1; }); });
       loadDay("today").then(function (r) { if (r && r.date) setDate(r.date); });
       loadList();
       loadHistoryAndEnsure(boardRef.current);

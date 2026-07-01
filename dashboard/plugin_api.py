@@ -1713,12 +1713,14 @@ def escalate(events: list[Event], tasks: dict, cfg: Config) -> list[dict]:
                     "id": key, "task_id": e.task_id, "kind": "approval",
                     "title": task_title, "detail": _short(reason, 280),
                     "deadline": e.data.get("deadline") or e.data.get("expires"),
+                    "status": t.status if t else None,
                 }
             else:
                 key = f"{e.task_id}:blocked"
                 primary[e.task_id] = {
                     "id": key, "task_id": e.task_id, "kind": "blocked",
                     "title": task_title, "detail": _short(reason, 280), "deadline": None,
+                    "status": t.status if t else None,
                 }
 
         elif e.kind in _FAILED_KINDS or b == "failed":
@@ -1730,6 +1732,7 @@ def escalate(events: list[Event], tasks: dict, cfg: Config) -> list[dict]:
                 "title": task_title,
                 "detail": _short(_reason_text(e) or default_detail, 280),
                 "deadline": None,
+                "status": t.status if t else None,
             }
 
         elif e.kind == "protocol_violation":
@@ -1748,6 +1751,7 @@ def escalate(events: list[Event], tasks: dict, cfg: Config) -> list[dict]:
                 "title": t.title if t else task_id,
                 "detail": detail,
                 "deadline": None,
+                "status": t.status if t else None,
             }
 
     return list(decisions.values())
