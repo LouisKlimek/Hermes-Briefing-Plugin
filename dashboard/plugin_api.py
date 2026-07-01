@@ -2296,6 +2296,111 @@ def run_verification(cfg: Config, date_str: str, src, events: list, tasks: dict,
     return {"checks": checks, "green": green, "red": red, "na": na, "total": len(checks)}
 
 
+def build_insights(cfg: Config, start_ts: int, end_ts: int) -> dict:
+    """Windowed usage analytics from Hermes' state.db (sessions + messages),
+    scoped to [start_ts, end_ts) so day/week/month reports stay accurate even
+    when rebuilt for the past. Mirrors `hermes insights`, but date-windowed."""
+    import sqlite3
+    import datetime as _dt
+    empty = {"available": False}
+    db = cfg.hermes_home / "state.db"
+    if not db.exists():
+        return empty
+    conn = None
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=4000")
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)")}
+        if not cols or "started_at" not in cols:
+            return empty
+
+        def has(c):
+            return c in cols
+
+        rows = conn.execute(
+            "SELECT * FROM sessions WHERE started_at >= ? AND started_at < ?",
+            (start_ts, end_ts)).fetchall()
+        n = len(rows)
+
+        def tok(r):
+            return ((r["input_tokens"] or 0) if has("input_tokens") else 0) + \
+                   ((r["output_tokens"] or 0) if has("output_tokens") else 0)
+
+        in_tok = sum((r["input_tokens"] or 0) for r in rows) if has("input_tokens") else 0
+        out_tok = sum((r["output_tokens"] or 0) for r in rows) if has("output_tokens") else 0
+        msgs = sum((r["message_count"] or 0) for r in rows) if has("message_count") else 0
+        tools = sum((r["tool_call_count"] or 0) for r in rows) if has("tool_call_count") else 0
+        dur = 0.0
+        for r in rows:
+            if has("ended_at") and has("started_at") and r["ended_at"] and r["started_at"]:
+                d = r["ended_at"] - r["started_at"]
+                if d > 0:
+                    dur += d
+
+        by_model: dict = {}
+        by_platform: dict = {}
+        z = _safe_zoneinfo(cfg.timezone)
+        weekday = [0] * 7
+        hours = [0] * 24
+        days = set()
+        for r in rows:
+            m = (r["model"] if has("model") and r["model"] else "?")
+            bm = by_model.setdefault(m, {"sessions": 0, "tokens": 0})
+            bm["sessions"] += 1
+            bm["tokens"] += tok(r)
+            p = (r["source"] if has("source") and r["source"] else "?")
+            bp = by_platform.setdefault(p, {"sessions": 0, "messages": 0, "tokens": 0})
+            bp["sessions"] += 1
+            bp["messages"] += (r["message_count"] or 0) if has("message_count") else 0
+            bp["tokens"] += tok(r)
+            t = r["started_at"]
+            if t:
+                dt = _dt.datetime.fromtimestamp(t, z)
+                weekday[dt.weekday()] += 1
+                hours[dt.hour] += 1
+                days.add(dt.strftime("%Y-%m-%d"))
+
+        user_msgs = 0
+        total_msgs_tbl = 0
+        try:
+            mc = {r2[1] for r2 in conn.execute("PRAGMA table_info(messages)")}
+            if "timestamp" in mc and "role" in mc:
+                for rr in conn.execute(
+                        "SELECT role, COUNT(*) c FROM messages WHERE timestamp>=? AND timestamp<? GROUP BY role",
+                        (start_ts, end_ts)):
+                    total_msgs_tbl += rr["c"]
+                    if str(rr["role"]).lower() == "user":
+                        user_msgs = rr["c"]
+        except Exception:
+            pass
+        if not msgs:
+            msgs = total_msgs_tbl
+
+        peak_hour = max(range(24), key=lambda h: hours[h]) if any(hours) else None
+        overview = {
+            "sessions": n, "messages": msgs, "tool_calls": tools, "user_messages": user_msgs,
+            "input_tokens": in_tok, "output_tokens": out_tok, "total_tokens": in_tok + out_tok,
+            "active_minutes": round(dur / 60), "avg_session_min": round((dur / 60) / n, 1) if n else 0,
+            "avg_msgs": round(msgs / n, 1) if n else 0,
+        }
+        model_list = sorted([dict(model=k, **v) for k, v in by_model.items()],
+                            key=lambda x: x["tokens"], reverse=True)
+        plat_list = sorted([dict(platform=k, **v) for k, v in by_platform.items()],
+                           key=lambda x: x["sessions"], reverse=True)
+        return {"available": n > 0, "overview": overview, "by_model": model_list,
+                "by_platform": plat_list, "weekday": weekday, "hours": hours,
+                "peak_hour": peak_hour, "active_days": len(days)}
+    except Exception:
+        return empty
+    finally:
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+
+
 def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = True,
                  board: str = "all") -> dict:
     start_ts, end_ts, _ = day_bounds(date_str, cfg.timezone)
@@ -2435,7 +2540,8 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = 
             for e in err:
                 by_kind[e.kind] = by_kind.get(e.kind, 0) + 1
             notes = [f"{n}× {k}" for k, n in by_kind.items()]
-        system = {"stable": not err, "notes": notes}
+        system = {"stable": not err, "notes": notes,
+                  "insights": build_insights(cfg, start_ts, end_ts)}
 
         # 6) learned (optional, lightweight: pull short comment lines tagged as notes)
         learned = _extract_learned(src, events, tasks)
@@ -2602,8 +2708,10 @@ def build_range(cfg: Config, from_date: str, to_date: str, board: str = "all") -
         rstart, _, _ = day_bounds(from_date, cfg.timezone)
         _, rend, _ = day_bounds(to_date, cfg.timezone)
         range_models = build_models(src.fetch_runs_window(rstart, rend), profile_meta(cfg))
+        range_insights = build_insights(cfg, rstart, rend)
     except Exception:
         range_models = {"by_profile": [], "by_model": [], "available": {}, "total_runs": 0}
+        range_insights = {"available": False}
     finally:
         src.close()
     try:
@@ -2629,6 +2737,7 @@ def build_range(cfg: Config, from_date: str, to_date: str, board: str = "all") -
             "budget_daily": cfg.budget_daily_eur, "budget_monthly": cfg.budget_monthly_eur,
             "num_days": len(days),
             "learned": learned, "decision_stats": stats, "models": range_models,
+            "system": {"insights": range_insights},
             "days": [{"date": d["date"], "cost": d["cost"]["today_eur"],
                       "done": len(d["done"]), "open": len(d["hand"])} for d in days],
         }

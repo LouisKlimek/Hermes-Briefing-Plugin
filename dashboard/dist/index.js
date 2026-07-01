@@ -270,6 +270,69 @@
       }));
   }
 
+  function fmtNum(n) { n = Number(n) || 0; try { return n.toLocaleString("en-US"); } catch (e) { return "" + n; } }
+  function fmtMin(m) { m = Math.round(Number(m) || 0); if (m < 60) return "~" + m + "m"; var hh = Math.floor(m / 60), mm = m % 60; return "~" + hh + "h" + (mm ? " " + mm + "m" : ""); }
+  function fmtHour(h24) { if (h24 == null) return ""; var ap = h24 < 12 ? "AM" : "PM"; var h12 = (h24 % 12) || 12; return h12 + ap; }
+
+  function InsightsBlock(props) {
+    var ins = props.insights || {};
+    if (!ins.available) return h("div", { style: { fontSize: "0.82rem", color: MUTED } },
+      props.stable ? "Stable \u00b7 no session analytics for this period." : "\u2014");
+    var o = ins.overview || {}, accent = "var(--color-primary, #6b8afd)";
+    function stat(label, val) {
+      return h("div", { style: { padding: "0.4rem 0.6rem", border: "1px solid var(--color-border)", borderRadius: "0.5rem", background: "var(--color-card)", minWidth: "4.8rem" } },
+        h("div", { style: { fontSize: "1.05rem", fontWeight: 700, lineHeight: 1.1 } }, val),
+        h("div", { style: { fontSize: "0.58rem", textTransform: "uppercase", letterSpacing: "0.05em", color: MUTED } }, label));
+    }
+    var stats = h("div", { style: { display: "flex", flexWrap: "wrap", gap: "0.5rem", marginBottom: "0.75rem" } },
+      stat("Sessions", fmtNum(o.sessions)), stat("Messages", fmtNum(o.messages)),
+      stat("Tool calls", fmtNum(o.tool_calls)), stat("User msgs", fmtNum(o.user_messages)),
+      stat("Total tokens", fmtNum(o.total_tokens)), stat("Active time", fmtMin(o.active_minutes)),
+      stat("Avg session", (o.avg_session_min || 0) + "m"), stat("Msgs/sess", o.avg_msgs || 0));
+
+    var inTok = o.input_tokens || 0, outTok = o.output_tokens || 0, tot = Math.max(1, inTok + outTok);
+    var tokenBar = h("div", { style: { marginBottom: "0.8rem" } },
+      h("div", { style: { display: "flex", justifyContent: "space-between", fontSize: "0.66rem", color: MUTED, marginBottom: "0.22rem" } },
+        h("span", null, "Input " + fmtNum(inTok)), h("span", null, "Output " + fmtNum(outTok))),
+      h("div", { style: { display: "flex", height: "10px", borderRadius: "999px", overflow: "hidden", background: "var(--color-card)", border: "1px solid var(--color-border)" } },
+        h("div", { style: { width: (inTok / tot * 100) + "%", background: accent, transition: "width .5s ease" } }),
+        h("div", { style: { width: (outTok / tot * 100) + "%", background: "#d4b348", transition: "width .5s ease" } })));
+
+    var wd = ins.weekday || [0, 0, 0, 0, 0, 0, 0], wmax = Math.max.apply(null, wd.concat([1]));
+    var labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"], H = 52;
+    var weekChart = h("div", null,
+      h("div", { style: { fontSize: "0.64rem", textTransform: "uppercase", letterSpacing: "0.05em", color: MUTED, marginBottom: "0.35rem" } },
+        "Activity by weekday" + (ins.peak_hour != null ? " \u00b7 peak " + fmtHour(ins.peak_hour) : "") + " \u00b7 " + (ins.active_days || 0) + " active day" + ((ins.active_days === 1) ? "" : "s")),
+      h("div", { style: { display: "flex", alignItems: "flex-end", gap: "4px", height: (H + 20) + "px" } },
+        wd.map(function (v, i) {
+          var px = v > 0 ? Math.max(4, Math.round(v / wmax * H)) : 0;
+          return h("div", { key: i, title: labels[i] + ": " + v, style: { flex: 1, display: "flex", flexDirection: "column", justifyContent: "flex-end", alignItems: "center", height: "100%" } },
+            h("div", { style: { fontSize: "0.58rem", color: MUTED, marginBottom: "2px" } }, v || ""),
+            h("div", { style: { width: "68%", height: px + "px", borderRadius: "3px 3px 0 0", background: accent, transition: "height .5s ease", transitionDelay: (i * 25) + "ms" } }),
+            h("div", { style: { fontSize: "0.56rem", color: MUTED, marginTop: "2px" } }, labels[i]));
+        })));
+
+    function hbars(title, rows, nameKey, valKey, unit, color) {
+      if (!rows || !rows.length) return null;
+      var mx = Math.max.apply(null, rows.map(function (r) { return r[valKey] || 0; }).concat([1]));
+      return h("div", { style: { flex: "1 1 240px", minWidth: 0 } },
+        h("div", { style: { fontSize: "0.64rem", textTransform: "uppercase", letterSpacing: "0.05em", color: MUTED, marginBottom: "0.35rem" } }, title),
+        rows.slice(0, 6).map(function (r, i) {
+          return h("div", { key: i, style: { marginBottom: "0.32rem" } },
+            h("div", { style: { display: "flex", justifyContent: "space-between", gap: "0.5rem", fontSize: "0.72rem", marginBottom: "1px" } },
+              h("span", { style: { fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, r[nameKey]),
+              h("span", { style: { color: MUTED, flex: "0 0 auto" } }, fmtNum(r[valKey]) + " " + unit)),
+            h("div", { style: { height: "6px", borderRadius: "999px", background: "var(--color-card)", border: "1px solid var(--color-border)", overflow: "hidden" } },
+              h("div", { style: { width: ((r[valKey] || 0) / mx * 100) + "%", height: "100%", background: color, transition: "width .5s ease" } })));
+        }));
+    }
+    var breakdown = h("div", { style: { display: "flex", flexWrap: "wrap", gap: "1.4rem", marginTop: "0.85rem" } },
+      hbars("Models \u00b7 tokens", ins.by_model, "model", "tokens", "tok", accent),
+      hbars("Platforms \u00b7 sessions", ins.by_platform, "platform", "sessions", "sess", "#3fb97d"));
+
+    return h("div", null, stats, tokenBar, weekChart, breakdown);
+  }
+
   function LearnedCards(props) {
     var items = props.items || [];
     return h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: "0.55rem" } },
@@ -464,7 +527,9 @@
         h(BudgetBar, { label: "This month", used: cost.month_eur, budget: cost.budget_monthly }),
         h("div", { style: { fontSize: "0.76rem", color: MUTED } }, (cost.runs || 0) + " runs"),
         cost.caveat ? h("div", { style: { fontSize: "0.74rem", color: MUTED, marginTop: "0.2rem" } }, "\u26a0 " + cost.caveat) : null),
-      h(Section, { title: "System" }, h("div", { style: { fontSize: "0.84rem" } }, sys.stable ? "stable" : ((sys.notes || []).join(", ") || "\u2014"))));
+      h(Section, { title: "System" }, h("div", null,
+        (sys.notes && sys.notes.length) ? h("div", { style: { fontSize: "0.8rem", color: "#d14a4a", marginBottom: "0.5rem", fontWeight: 600 } }, sys.notes.join(", ")) : null,
+        h(InsightsBlock, { insights: sys.insights, stable: sys.stable }))));
   }
 
   function RangeView(props) {
@@ -495,6 +560,7 @@
       (r.done && r.done.length) ? h(Section, { title: "Done (" + r.done.length + ")" }, h(DoneGrid, { items: r.done, target: props.target }))
         : h(Section, { title: "Done" }, h("div", { style: { fontSize: "0.82rem", color: MUTED } }, "Nothing recorded in this range.")),
       (r.models && r.models.total_runs) ? h(Section, { title: "Models \u00b7 " + (r.models.by_profile.length) + " profiles" }, h(ModelsTable, { models: r.models })) : null,
+      (r.system && r.system.insights && r.system.insights.available) ? h(Section, { title: "System" }, h(InsightsBlock, { insights: r.system.insights, stable: true })) : null,
       (r.learned && r.learned.length) ? h(Section, { title: "Insights (" + r.learned.length + ")" }, h(LearnedCards, { items: r.learned, target: props.target })) : null);
     function stat(label, val) {
       return h("div", null,
