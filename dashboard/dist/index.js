@@ -287,21 +287,32 @@
       }));
   }
 
-  function kpiTile(label, val, color) {
-    return h("div", { style: { minWidth: "4.6rem", padding: "0.4rem 0.6rem", border: "1px solid var(--color-border)", borderRadius: "0.5rem", background: "var(--color-card)" } },
+  function kpiCell(label, val, color, key) {
+    return h("div", { key: key, style: { padding: "0.4rem 0.6rem", border: "1px solid var(--color-border)", borderRadius: "0.5rem", background: "var(--color-card)" } },
       h("div", { style: { fontSize: "1.15rem", fontWeight: 700, color: color || "inherit", lineHeight: 1.1 } }, val),
       h("div", { style: { fontSize: "0.62rem", textTransform: "uppercase", letterSpacing: "0.05em", color: MUTED } }, label));
+  }
+  function KpiGrid(props) {
+    var ov = props.overview || {}, k = ov.kpis || {}, ct = ov.counters || {};
+    var tiles = [
+      ["Done", k.done || 0, "#3fb97d"],
+      ["New", k.new || 0, null],
+      ["Blocked", k.blocked || 0, k.blocked ? "#d14a4a" : null],
+      ["Profiles", k.active_profiles || 0, null],
+      ["Lessons", ct.lessons || 0, null],
+      ["Skill/SOUL", ct.skill_soul || 0, null]
+    ];
+    return h("div", { style: { display: "grid", gridTemplateColumns: "repeat(3, minmax(4.4rem, 1fr))", gap: "0.5rem", flex: "0 0 auto", minWidth: "15rem" } },
+      tiles.map(function (t, i) { return kpiCell(t[0], t[1], t[2], i); }));
   }
   function lightColor(light) { return light === "blocked" ? "#d14a4a" : light === "waiting" ? "#d4b348" : "#3fb97d"; }
   function lightWord(light) { return light === "blocked" ? "blocked" : light === "waiting" ? "waiting" : "on track"; }
 
   function Overview(props) {
     var ov = props.overview || {}, vf = props.verification || {};
-    var k = ov.kpis || {}, ct = ov.counters || {}, ti = ov.team_input || {};
-    var vcolor = (vf.red > 0) ? "#ef4444" : "#22c55e";
-    return h("div", { style: { marginBottom: "0.85rem", paddingBottom: "0.75rem", borderBottom: "1px solid var(--color-border)" } },
-      h("div", { style: { fontSize: "0.74rem", color: MUTED, marginBottom: "0.55rem" } },
-        props.date + (ov.phase ? " \u00b7 Phase " + ov.phase : "") + " \u00b7 " + (ov.mode || "day") + " \u00b7 " + (ov.board === "all" ? "All boards" : ov.board)),
+    var ti = ov.team_input || {};
+    var vcolor = (vf.red > 0) ? "#d14a4a" : "#3fb97d";
+    return h("div", { style: { marginBottom: "0.85rem" } },
       (ov.board_lights && ov.board_lights.length) ? h("div", { style: { display: "flex", flexWrap: "wrap", gap: "0.4rem", marginBottom: "0.6rem" } },
         ov.board_lights.map(function (b, i) {
           var c = lightColor(b.light);
@@ -309,13 +320,6 @@
             h("span", { style: { width: "8px", height: "8px", borderRadius: "999px", background: c, boxShadow: "0 0 6px " + c + "88" } }),
             b.board, h("span", { style: { color: MUTED } }, lightWord(b.light)));
         })) : null,
-      h("div", { style: { display: "flex", flexWrap: "wrap", gap: "0.5rem", marginBottom: "0.55rem" } },
-        kpiTile("Done", k.done || 0, "#22c55e"),
-        kpiTile("New", k.new || 0, null),
-        kpiTile("Blocked", k.blocked || 0, k.blocked ? "#ef4444" : null),
-        kpiTile("Profiles", k.active_profiles || 0, null),
-        kpiTile("Lessons", ct.lessons || 0, null),
-        kpiTile("Skill/SOUL", ct.skill_soul || 0, null)),
       h("div", { style: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: "0.9rem" } },
         h("span", { style: { display: "inline-flex", alignItems: "center", gap: "0.4rem", fontSize: "0.82rem", fontWeight: 600 } },
           h("span", { style: { width: "9px", height: "9px", borderRadius: "999px", background: vcolor } }),
@@ -414,13 +418,18 @@
     var digest = props.digest, building = props.building;
     var hd = digest.header || {}, cost = digest.cost || {}, sys = digest.system || {};
     return h("div", { key: digest.date, className: "brf-fade-in", style: { flex: 1, paddingLeft: "1rem", overflowY: "auto", maxHeight: "68vh" } },
-      h("div", { style: { display: "flex", alignItems: "baseline", gap: "0.75rem", marginBottom: "0.35rem", flexWrap: "wrap" } },
-        h("h3", { style: { margin: 0, fontSize: "1.05rem" } }, digest.date + " \u00b7 " + (hd.status || "")),
-        h("span", { style: { fontSize: "0.85rem", color: MUTED } },
-          (hd.open ? hd.open + " open" : "nothing open") + " \u00b7 " + eur(hd.cost_eur) + " / $" + (cost.budget_daily || 0).toFixed(0)),
-        Button ? h(Button, { size: "sm", variant: "secondary", disabled: building, onClick: props.onRebuild },
-          building ? h("span", null, h(Spinner, { style: { marginRight: "0.35rem" } }), "Building\u2026") : "Rebuild") : null,
-        digest.generated_at ? h("span", { style: { fontSize: "0.72rem", color: MUTED } }, "built " + timeAgo(digest.generated_at)) : null),
+      h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "1rem", flexWrap: "wrap", marginBottom: "0.85rem", paddingBottom: "0.75rem", borderBottom: "1px solid var(--color-border)" } },
+        h("div", { style: { flex: "1 1 16rem", minWidth: 0 } },
+          h("div", { style: { display: "flex", alignItems: "baseline", gap: "0.75rem", marginBottom: "0.35rem", flexWrap: "wrap" } },
+            h("h3", { style: { margin: 0, fontSize: "1.05rem" } }, digest.date + " \u00b7 " + (hd.status || "")),
+            h("span", { style: { fontSize: "0.85rem", color: MUTED } },
+              (hd.open ? hd.open + " open" : "nothing open") + " \u00b7 " + eur(hd.cost_eur) + " / $" + (cost.budget_daily || 0).toFixed(0)),
+            Button ? h(Button, { size: "sm", variant: "secondary", disabled: building, onClick: props.onRebuild },
+              building ? h("span", null, h(Spinner, { style: { marginRight: "0.35rem" } }), "Building\u2026") : "Rebuild") : null,
+            digest.generated_at ? h("span", { style: { fontSize: "0.72rem", color: MUTED } }, "built " + timeAgo(digest.generated_at)) : null),
+          digest.overview ? h("div", { style: { fontSize: "0.74rem", color: MUTED } },
+            digest.date + (digest.overview.phase ? " \u00b7 Phase " + digest.overview.phase : "") + " \u00b7 " + (digest.overview.mode || "day") + " \u00b7 " + (digest.overview.board === "all" ? "All boards" : digest.overview.board)) : null),
+        digest.overview ? h(KpiGrid, { overview: digest.overview }) : null),
 
       digest.overview ? h(Overview, { overview: digest.overview, verification: digest.verification, date: digest.date }) : null,
 
