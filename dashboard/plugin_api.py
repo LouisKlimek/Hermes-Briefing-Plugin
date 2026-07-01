@@ -2052,7 +2052,10 @@ def build_overview(cfg: Config, date_str: str, board: str, events: list, tasks: 
     profs.discard("unknown"); profs.discard("")
 
     done_ids = {e.task_id for e in events if e.kind in _DONE_KINDS or event_bucket(e) == "done"}
-    blocked_ids = {e.task_id for e in events if event_bucket(e) in ("blocked", "failed")}
+    # "Blocked" is a STATE, not a per-day flow: count every task still blocked/
+    # failed as of this report (carried over from earlier days), matching the
+    # board lights and the "Needs your call" list — not just newly-blocked today.
+    blocked_now_total = sum(lg["blocked"] for lg in lights)
 
     # team input: human-created cards today + still unrouted (real created_by)
     team_new = 0; team_unrouted = 0
@@ -2100,7 +2103,7 @@ def build_overview(cfg: Config, date_str: str, board: str, events: list, tasks: 
     return {
         "mode": "day", "board": board or "all", "phase": phase,
         "board_lights": lights,
-        "kpis": {"done": len(done_ids), "new": new_total, "blocked": len(blocked_ids),
+        "kpis": {"done": len(done_ids), "new": new_total, "blocked": blocked_now_total,
                  "active_profiles": len(profs)},
         "counters": {"lessons": len(learned), "skill_soul": skill_soul},
         "team_input": {"new": team_new, "unrouted": team_unrouted},
@@ -2300,6 +2303,23 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = 
                 if board not in (None, "all") and _BoardSource.slug_of(od.get("task_id", "")) != board:
                     continue        # other board's carry-over — not in this view
                 hand.append(od)
+            # guarantee every currently blocked/failed task is listed (carried
+            # over from earlier days), even if no decision record exists for it —
+            # so the "Blocked" count and this list always agree.
+            present = {d.get("task_id") for d in hand}
+            for tid, t in tasks.items():
+                if tid in present:
+                    continue
+                if board not in (None, "all") and _BoardSource.slug_of(tid) != board:
+                    continue
+                if _bucket_of(t.status) in ("blocked", "failed"):
+                    kind = "failed" if _bucket_of(t.status) == "failed" else "blocked"
+                    detail = ("Still blocked — carried over from an earlier day."
+                              if cfg.language != "de"
+                              else "Weiterhin blockiert — von einem früheren Tag übernommen.")
+                    hand.append({"id": f"{tid}:{kind}", "task_id": tid, "kind": kind,
+                                 "title": t.title, "detail": detail, "deadline": None,
+                                 "status": t.status})
         # color/label by the task's real kanban status where we have it
         for d in hand:
             t = tasks.get(d.get("task_id"))
