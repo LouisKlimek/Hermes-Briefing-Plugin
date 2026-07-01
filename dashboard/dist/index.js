@@ -280,11 +280,11 @@
       props.stable ? "Stable \u00b7 no session analytics for this period." : "\u2014");
     var o = ins.overview || {}, accent = "var(--color-primary, #6b8afd)";
     function stat(label, val) {
-      return h("div", { style: { padding: "0.4rem 0.6rem", border: "1px solid var(--color-border)", borderRadius: "0.5rem", background: "var(--color-card)", minWidth: "4.8rem" } },
-        h("div", { style: { fontSize: "1.05rem", fontWeight: 700, lineHeight: 1.1 } }, val),
-        h("div", { style: { fontSize: "0.58rem", textTransform: "uppercase", letterSpacing: "0.05em", color: MUTED } }, label));
+      return h("div", { style: { padding: "0.65rem 0.9rem", border: "1px solid var(--color-border)", borderRadius: "0.6rem", background: "var(--color-card)", minWidth: "6rem" } },
+        h("div", { style: { fontSize: "1.3rem", fontWeight: 700, lineHeight: 1.1 } }, val),
+        h("div", { style: { fontSize: "0.64rem", textTransform: "uppercase", letterSpacing: "0.05em", color: MUTED, marginTop: "0.15rem" } }, label));
     }
-    var stats = h("div", { style: { display: "flex", flexWrap: "wrap", gap: "0.5rem", marginBottom: "0.75rem" } },
+    var stats = h("div", { style: { display: "flex", flexWrap: "wrap", gap: "0.6rem", marginBottom: "0.85rem" } },
       stat("Sessions", fmtNum(o.sessions)), stat("Messages", fmtNum(o.messages)),
       stat("Tool calls", fmtNum(o.tool_calls)), stat("User msgs", fmtNum(o.user_messages)),
       stat("Total tokens", fmtNum(o.total_tokens)), stat("Active time", fmtMin(o.active_minutes)),
@@ -351,9 +351,9 @@
   }
 
   function kpiCell(label, val, color, key) {
-    return h("div", { key: key, style: { padding: "0.4rem 0.6rem", border: "1px solid var(--color-border)", borderRadius: "0.5rem", background: "var(--color-card)" } },
-      h("div", { style: { fontSize: "1.15rem", fontWeight: 700, color: color || "inherit", lineHeight: 1.1 } }, val),
-      h("div", { style: { fontSize: "0.62rem", textTransform: "uppercase", letterSpacing: "0.05em", color: MUTED } }, label));
+    return h("div", { key: key, style: { padding: "0.65rem 0.9rem", border: "1px solid var(--color-border)", borderRadius: "0.6rem", background: "var(--color-card)" } },
+      h("div", { style: { fontSize: "1.45rem", fontWeight: 700, color: color || "inherit", lineHeight: 1.1 } }, val),
+      h("div", { style: { fontSize: "0.68rem", textTransform: "uppercase", letterSpacing: "0.05em", color: MUTED, marginTop: "0.15rem" } }, label));
   }
   function KpiGrid(props) {
     var ov = props.overview || {}, k = ov.kpis || {}, ct = ov.counters || {};
@@ -365,7 +365,7 @@
       ["Lessons", ct.lessons || 0, null],
       ["Skill/SOUL", ct.skill_soul || 0, null]
     ];
-    return h("div", { style: { display: "grid", gridTemplateColumns: "repeat(3, minmax(4.4rem, 1fr))", gap: "0.5rem", flex: "0 0 auto", minWidth: "15rem" } },
+    return h("div", { style: { display: "grid", gridTemplateColumns: "repeat(3, minmax(5.4rem, 1fr))", gap: "0.6rem", flex: "0 0 auto", minWidth: "17rem" } },
       tiles.map(function (t, i) { return kpiCell(t[0], t[1], t[2], i); }));
   }
   function lightColor(light) { return light === "blocked" ? "#d14a4a" : light === "waiting" ? "#d4b348" : "#3fb97d"; }
