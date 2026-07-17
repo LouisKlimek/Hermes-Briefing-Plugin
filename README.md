@@ -187,6 +187,9 @@ Everything is optional and lives in `~/.hermes/briefing/config.yaml`; `REPORTS_*
 | `protocol_violation_alert_threshold` | Flag a task as _Instabil_ after this many violations in a window. |
 | `schedule` | Local `HH:MM` times your timer/cron runs — drives the "next build" hint in the dashboard. |
 | `language` | `en` (default) or `de`. |
+| `external_board_roots` | Explicit read-only board roots outside this profile. Each entry is a directory containing `<slug>/kanban.db`; these are added to normal profile-local discovery. |
+| `external_board_dbs` | Explicit read-only paths to individual allowed `kanban.db` files; the board picker uses the DB parent directory as its slug. |
+| `kanban_db` / `REPORTS_KANBAN_DB` | Explicit **single-board** override. It takes precedence over both external-source options and does not aggregate them. |
 | `llm.enabled` | Turn on for richer "why" lines. Any OpenAI-compatible endpoint or Anthropic. ≤120 tokens, cached, cheap. |
 | `schema` | Column-name overrides — only if PRAGMA auto-detection guesses wrong. |
 
@@ -218,7 +221,7 @@ Like all Hermes plugin routes, these bypass session auth because the dashboard b
 
 - **Cost source.** `hermes insights` is keyed on sessions; it reliably counts interactive surfaces (tui/gateway) but may not capture autonomous dispatcher worker runs. The briefing flags this. If your runs table carries token/cost columns, Briefing auto-detects and prefers them for a true per-run figure.
 - **"Notiert" is light.** It surfaces short comment lines tagged `notiert:` / `gelernt:` / `learned:`. For richer learnings, have your orchestrator emit them as tagged comments.
-- **Single host.** Like the board itself, this reads one local SQLite file.
+- **Configured sources only.** By default discovery stays profile-local. To aggregate boards outside a profile, explicitly configure `external_board_roots` and/or `external_board_dbs`; Briefing opens every source SQLite database with `mode=ro` and never writes to a Kanban database. `kanban_db` remains a deliberately single-board override.
 
 ---
 

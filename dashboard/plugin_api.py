@@ -132,6 +132,11 @@ class SMTPConfig:
 class Config:
     hermes_home: Path = field(default_factory=_hermes_home)
     kanban_db: Path | None = None          # default: <hermes_home>/kanban.db
+    # Explicit extra sources for profile-scoped dashboards. Each root contains
+    # <slug>/kanban.db; each path is one allowed board DB. `kanban_db` remains
+    # a single-board override and takes precedence over both lists.
+    external_board_roots: list[Path] = field(default_factory=list)
+    external_board_dbs: list[Path] = field(default_factory=list)
     reports_dir: Path | None = None        # default: <hermes_home>/reports
     timezone: str = "Europe/Berlin"
     language: str = "en"          # "en" | "de"
@@ -165,10 +170,21 @@ class Config:
         return self.resolved_reports_dir() / "briefing.db"
 
 
+def _path_list(value: Any) -> list[Path]:
+    """Normalize a YAML/env source list without accepting implicit locations."""
+    if not isinstance(value, list):
+        value = [value] if value else []
+    return [Path(str(p)).expanduser() for p in value if str(p).strip()]
+
+
 def _apply_yaml(cfg: Config, data: dict[str, Any]) -> None:
     for k in ("timezone", "language", "kanban_db", "reports_dir"):
         if data.get(k) is not None:
             setattr(cfg, k, data[k])
+    if "external_board_roots" in data:
+        cfg.external_board_roots = _path_list(data["external_board_roots"])
+    if "external_board_dbs" in data:
+        cfg.external_board_dbs = _path_list(data["external_board_dbs"])
     if isinstance(data.get("schedule"), list):
         cfg.schedule = [str(s) for s in data["schedule"]]
     elif data.get("schedule"):
@@ -200,6 +216,10 @@ def _apply_yaml(cfg: Config, data: dict[str, Any]) -> None:
 def _apply_env(cfg: Config) -> None:
     e = os.environ.get
     if e("REPORTS_KANBAN_DB"):       cfg.kanban_db = e("REPORTS_KANBAN_DB")
+    if roots := e("REPORTS_EXTERNAL_BOARD_ROOTS"):
+        cfg.external_board_roots = _path_list(roots.split(os.pathsep))
+    if dbs := e("REPORTS_EXTERNAL_BOARD_DBS"):
+        cfg.external_board_dbs = _path_list(dbs.split(os.pathsep))
     if e("REPORTS_DIR"):             cfg.reports_dir = e("REPORTS_DIR")
     if e("REPORTS_TIMEZONE"):        cfg.timezone = e("REPORTS_TIMEZONE")
     if e("REPORTS_LANGUAGE"):        cfg.language = e("REPORTS_LANGUAGE")
@@ -1083,32 +1103,46 @@ class _BoardSource:
 
 
 def discover_boards(cfg: Config) -> list[tuple[str, Path]]:
-    """All kanban DBs as (slug, path). The default board plus every named board
-    under ``<hermes_home>/kanban/boards/<slug>/kanban.db``. If ``kanban_db`` is
-    explicitly configured we honour only that (single board)."""
+    """All configured kanban DBs as ``(slug, path)``.
+
+    ``kanban_db`` deliberately remains an explicit single-board override. Without
+    it, normal profile-local discovery is preserved and explicit external roots
+    (``<root>/<slug>/kanban.db``) and DB paths are added read-only as sources.
+    """
     out: list[tuple[str, Path]] = []
-    seen: set[str] = set()
+    seen_paths: set[str] = set()
+    seen_slugs: set[str] = set()
 
     def add(slug: str, p: Path):
         try:
             rp = str(p.resolve())
         except Exception:
             rp = str(p)
-        if p and p.is_file() and rp not in seen:
-            seen.add(rp)
-            out.append((slug, p))
+        if not p or not p.is_file() or rp in seen_paths:
+            return
+        base_slug = slug or "default"
+        unique_slug = base_slug
+        suffix = 2
+        while unique_slug in seen_slugs:
+            unique_slug = f"{base_slug}-{suffix}"
+            suffix += 1
+        seen_paths.add(rp)
+        seen_slugs.add(unique_slug)
+        out.append((unique_slug, p))
 
     if cfg.kanban_db:                       # explicit override → single board
         add("default", cfg.resolved_kanban_db())
         return out or [("default", cfg.resolved_kanban_db())]
 
     add("default", cfg.hermes_home / "kanban.db")
-    for base in (cfg.hermes_home / "kanban" / "boards",
-                 cfg.hermes_home / "boards"):
+    for base in (cfg.hermes_home / "kanban" / "boards", cfg.hermes_home / "boards",
+                 *cfg.external_board_roots):
         if base.is_dir():
             for d in sorted(base.iterdir()):
                 if d.is_dir():
                     add(d.name, d / "kanban.db")
+    for db in cfg.external_board_dbs:
+        add(db.parent.name or "external", db)
     return out
 
 
