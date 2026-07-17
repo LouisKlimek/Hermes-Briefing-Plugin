@@ -5,6 +5,15 @@
 timezone: Europe/Berlin
 language: en            # en | de
 
+# Optional, explicit read-only sources outside this Hermes profile. Each root
+# contains <board-slug>/kanban.db. Use external_board_dbs for individual DBs.
+# These add to normal profile-local discovery; do not hard-code host paths here.
+# `kanban_db` (or REPORTS_KANBAN_DB) remains a single-board override and wins.
+# external_board_roots:
+#   - /srv/hermes/kanban/boards
+# external_board_dbs:
+#   - /srv/approved-boards/operations/kanban.db
+
 # Local times the systemd timer / cron builds the briefing — used to show
 # "next build" in the dashboard. Match these to your timer.
 schedule:
