@@ -90,6 +90,20 @@ class BoardSourceTests(unittest.TestCase):
             finally:
                 src.close()
 
+    def test_special_characters_in_configured_db_path_remain_read_only(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "approved" / "kanban#.db"
+            make_board(db, "special-path-task", 10)
+            src = api.KanbanSource(api.Config(hermes_home=Path(tmp) / "isolated-profile",
+                                              external_board_dbs=[db]))
+            try:
+                self.assertEqual({event.task_id for event in src.fetch_events(0, 20)},
+                                 {"approved::special-path-task"})
+                with self.assertRaises(sqlite3.OperationalError):
+                    src._sources[0].connect().execute("CREATE TABLE must_not_write (id INTEGER)")
+            finally:
+                src.close()
+
     def test_yaml_configuration_accepts_roots_and_allowed_db_paths(self):
         cfg = api.Config()
         api._apply_yaml(cfg, {

@@ -739,7 +739,10 @@ class _BoardSource:
 
     def connect(self) -> sqlite3.Connection:
         if self._conn is None:
-            uri = f"file:{self.path}?mode=ro"
+            # Path.as_uri() percent-encodes URI metacharacters (notably # and ?),
+            # so an explicitly configured filename cannot truncate the URI and
+            # accidentally drop the read-only mode query parameter.
+            uri = f"{self.path.resolve().as_uri()}?mode=ro"
             self._conn = sqlite3.connect(uri, uri=True, timeout=5)
             self._conn.row_factory = sqlite3.Row
             self._introspect()
