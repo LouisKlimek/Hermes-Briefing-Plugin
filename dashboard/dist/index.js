@@ -607,6 +607,7 @@
         h(BudgetBar, { label: "Today", used: cost.today_eur, budget: cost.budget_daily }),
         h(BudgetBar, { label: "This month", used: cost.month_eur, budget: cost.budget_monthly }),
         h("div", { style: { fontSize: "0.76rem", color: MUTED } }, (cost.runs || 0) + " runs"),
+        h("a", { href: "https://github.com/LouisKlimek/Hermes-Briefing-Plugin#configuration", target: "_blank", rel: "noopener noreferrer", title: "Edit ~/.hermes/briefing/config.yaml: budget.daily_eur and budget.monthly_eur", "aria-label": "Edit budget limits in ~/.hermes/briefing/config.yaml: budget.daily_eur and budget.monthly_eur", style: { display: "inline-block", marginTop: "0.3rem", fontSize: "0.72rem", color: MUTED } }, "Edit limits in config.yaml \u2197"),
         cost.caveat ? h("div", { style: { fontSize: "0.74rem", color: MUTED, marginTop: "0.2rem" } }, "\u26a0 " + cost.caveat) : null),
       h(Section, { title: "System" }, h("div", null,
         (sys.notes && sys.notes.length) ? h("div", { style: { fontSize: "0.8rem", color: "#d14a4a", marginBottom: "0.5rem", fontWeight: 600 } }, sys.notes.join(", ")) : null,
