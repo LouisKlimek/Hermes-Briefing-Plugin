@@ -2925,12 +2925,14 @@ def _fmt_deadline(deadline, tz: str) -> str:
         return str(deadline) if deadline else ""
 
 
-def build_task_view(src: KanbanSource) -> dict:
-    """Return the current board snapshot for the read-only report task view.
+def build_task_view(src: KanbanSource, start_ts: int | None = None,
+                    end_ts: int | None = None) -> dict:
+    """Return a read-only task list for a report window.
 
-    Keep the response close to the actual kanban schema but make the few
-    derived presentation fields explicit: board name from the namespaced ID,
-    comment count, parent/child links, and the latest completion transition.
+    When a window is supplied, the list is deliberately transition-based: each
+    row represents the most recent done/blocked transition inside that window,
+    not the task's current global status.  This keeps the TaskList and its
+    chart aligned and excludes carried-over terminal tasks.
     """
     tasks = src.fetch_tasks()
     links = src.fetch_links()
@@ -2939,27 +2941,42 @@ def build_task_view(src: KanbanSource) -> dict:
     for child, parent in parents.items():
         children.setdefault(parent, []).append(child)
 
-    now = int(time.time())
-    completed: dict[str, int] = {}
-    for event in src.fetch_events(0, now + 1):
-        if event.task_id in tasks and _bucket_of(tasks[event.task_id].status) == "done" and _bucket_ev(event.kind, event.data) == "done":
-            completed[event.task_id] = max(completed.get(event.task_id, 0), event.ts)
+    transitions: dict[str, Event] = {}
+    windowed = start_ts is not None and end_ts is not None
+    if windowed:
+        assert start_ts is not None and end_ts is not None
+        for event in src.fetch_events(start_ts, end_ts):
+            bucket = event_bucket(event)
+            if event.task_id not in tasks or bucket not in ("done", "blocked", "failed"):
+                continue
+            prior = transitions.get(event.task_id)
+            if prior is None or (event.ts, str(event.id)) >= (prior.ts, str(prior.id)):
+                transitions[event.task_id] = event
+    else:
+        now = int(time.time())
+        for event in src.fetch_events(0, now + 1):
+            if event.task_id in tasks and _bucket_of(tasks[event.task_id].status) == "done" and event_bucket(event) == "done":
+                transitions[event.task_id] = event
 
     rows = []
-    for task in tasks.values():
-        task_id = task.id
+    selected_ids = set(transitions) if windowed else set(tasks)
+    for task_id in selected_ids:
+        task = tasks[task_id]
+        transition = transitions.get(task_id)
+        bucket = event_bucket(transition) if transition else None
+        status = (_event_status(transition) or bucket) if transition else task.status
         rows.append({
             "id": task_id,
             "title": task.title,
-            "status": task.status,
+            "status": status,
             "priority": task.priority,
             "assignee": task.assignee,
             "board": _BoardSource.slug_of(task_id),
             "created_at": task.created or None,
-            "completed_at": completed.get(task_id),
+            "completed_at": transition.ts if transition and bucket == "done" else None,
             "comment_count": len(src.fetch_comments(task_id)),
-            "parent_id": parents.get(task_id),
-            "child_ids": sorted(children.get(task_id, [])),
+            "parent_id": parents.get(task_id) if parents.get(task_id) in selected_ids else None,
+            "child_ids": sorted(child for child in children.get(task_id, []) if child in selected_ids),
         })
     return {"tasks": rows}
 
@@ -3018,12 +3035,14 @@ if router is not None:
             src.close()
 
     @router.get("/tasks")
-    def tasks(board: str = "all"):
-        """Read-only current task snapshot for the report task view."""
+    def tasks(from_: str, to: str, board: str = "all"):
+        """Read-only terminal task transitions for the requested report dates."""
         cfg = load_config()
+        start_ts, _, _ = day_bounds(from_, cfg.timezone)
+        _, end_ts, _ = day_bounds(to, cfg.timezone)
         src = KanbanSource(cfg, None if board in (None, "", "all") else board)
         try:
-            return build_task_view(src)
+            return build_task_view(src, start_ts, end_ts)
         finally:
             src.close()
 

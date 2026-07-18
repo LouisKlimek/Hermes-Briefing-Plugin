@@ -479,7 +479,6 @@
     return null;
   }
   function TaskListChart(props) {
-    if (!props.target || props.target.kind !== "tasklist") return null;
     var lists = {};
     (props.tasks || []).forEach(function (task) {
       var bucket = taskStatusBucket(task.status); if (!bucket) return;
@@ -490,17 +489,17 @@
     var rows = Object.keys(lists).map(function (name) { return lists[name]; });
     if (!rows.length) return null;
     var max = Math.max.apply(null, rows.map(function (row) { return row.done + row.blocked; }).concat([1]));
-    return h("section", { className: "brf-task-chart", "aria-label": "Task status by list" },
-      h("div", { className: "brf-task-chart-title" }, "Task status by list"),
-      h("div", { className: "brf-task-chart-legend" }, h("span", null, h("i", { className: "brf-task-dot", style: { background: "#22c55e" } }), " Done"), h("span", null, h("i", { className: "brf-task-dot", style: { background: "#ef4444" } }), " Blocked"), h("span", null, "Counts")),
-      h("div", { className: "brf-task-chart-rows" }, rows.map(function (row) {
+    return h("section", { className: "brf-task-chart", "aria-label": "Task transitions by list" },
+      h("div", { className: "brf-task-chart-title" }, "Task transitions by list"),
+      h("div", { className: "brf-task-chart-legend" }, h("span", null, h("i", { className: "brf-task-dot", style: { background: "#22c55e" } }), " Done"), h("span", null, h("i", { className: "brf-task-dot", style: { background: "#ef4444" } }), " Blocked"), h("span", null, "Y: count · X: list")),
+      h("div", { className: "brf-task-chart-columns" }, rows.map(function (row) {
         var total = row.done + row.blocked;
-        return h("div", { key: row.name, className: "brf-task-chart-row" },
-          h("span", { className: "brf-task-chart-label", title: row.name }, row.name),
-          h("div", { className: "brf-task-chart-stack", title: total + " tasks" },
-            row.done ? h("i", { style: { width: (row.done / max * 100) + "%", background: "#22c55e" } }) : null,
-            row.blocked ? h("i", { style: { width: (row.blocked / max * 100) + "%", background: "#ef4444" } }) : null),
-          h("span", { className: "brf-task-chart-count" }, total));
+        return h("div", { key: row.name, className: "brf-task-chart-column" },
+          h("span", { className: "brf-task-chart-count" }, total),
+          h("div", { className: "brf-task-chart-stack", title: total + " transitions", style: { height: (total / max * 100) + "%" } },
+            row.done ? h("i", { style: { height: (row.done / total * 100) + "%", background: "#22c55e" } }) : null,
+            row.blocked ? h("i", { style: { height: (row.blocked / total * 100) + "%", background: "#ef4444" } }) : null),
+          h("span", { className: "brf-task-chart-label", title: row.name }, row.name));
       })));
   }
   function TaskListView(props) {
@@ -652,8 +651,7 @@
               h("div", { style: { fontSize: "0.85rem", fontWeight: 600, lineHeight: 1.35 } }, d.title),
               d.detail ? h("div", { style: { fontSize: "0.76rem", color: MUTED, lineHeight: 1.5, marginTop: "0.25rem", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" } }, d.detail) : null,
               h("a", { href: t.url, style: { display: "inline-block", marginTop: "0.4rem", fontSize: "0.76rem", fontWeight: 600, textDecoration: "none", color: "inherit", border: "1px solid var(--color-border)", borderRadius: "0.4rem", padding: "0.12rem 0.5rem" } }, "Open ticket \u2192")); }))) : null,
-      (r.done && r.done.length) ? h(Section, { title: "Done (" + r.done.length + ")" }, h(DoneGrid, { items: r.done, target: props.target }))
-        : h(Section, { title: "Done" }, h("div", { style: { fontSize: "0.82rem", color: MUTED } }, "Nothing recorded in this range.")),
+      h(Section, { title: "Task transitions (" + ((props.tasks || []).length) + ")" }, h(TaskListView, { tasks: props.tasks, loading: props.tasksLoading, target: props.target })),
       (r.models && r.models.total_runs) ? h(Section, { title: "Models \u00b7 " + (r.models.by_profile.length) + " profiles" }, h(ModelsTable, { models: r.models })) : null,
       (r.system && r.system.insights && r.system.insights.available) ? h(Section, { title: "System" }, h(InsightsBlock, { insights: r.system.insights, stable: true })) : null,
       (r.learned && r.learned.length) ? h(Section, { title: "Insights (" + r.learned.length + ")" }, h(LearnedCards, { items: r.learned, target: props.target })) : null);
@@ -722,17 +720,21 @@
       }).catch(function () { return {}; });
     }, []);
 
-    var loadTasks = useCallback(function (b) {
+    var loadTasks = useCallback(function (from, to, b) {
       setTasksLoading(true);
-      return fetchJSON(addBoard(apiRef.current + "/tasks", b == null ? boardRef.current : b)).then(function (r) {
+      var query = "/tasks?from_=" + encodeURIComponent(from) + "&to=" + encodeURIComponent(to);
+      return fetchJSON(addBoard(apiRef.current + query, b == null ? boardRef.current : b)).then(function (r) {
         setTasks((r && r.tasks) || []);
       }).catch(function () { setTasks([]); }).then(function () { setTasksLoading(false); });
     }, []);
 
     var loadDay = useCallback(function (d) {
       setDayLoading(true);
-      return fetchJSON(addBoard(apiRef.current + "/digest/" + d, boardRef.current)).then(function (r) { setDigest(r); return r; })
-        .catch(function () { setDigest(null); }).then(function (r) { setDayLoading(false); return r; });
+      return fetchJSON(addBoard(apiRef.current + "/digest/" + d, boardRef.current)).then(function (r) {
+        setDigest(r);
+        if (r && r.date) loadTasks(r.date, r.date);
+        return r;
+      }).catch(function () { setDigest(null); setTasks([]); }).then(function (r) { setDayLoading(false); return r; });
     }, []);
 
     var loadHistoryAndEnsure = useCallback(function (b) {
@@ -766,7 +768,6 @@
       loadKanbanCss(function () { setColorsV(function (v) { return v + 1; }); });
       loadDay("today").then(function (r) { if (r && r.date) setDate(r.date); });
       loadList();
-      loadTasks(boardRef.current);
       loadHistoryAndEnsure(boardRef.current);
     }
 
@@ -818,7 +819,7 @@
         from = addDaysStr(wc, -6);
       }
       return fetchJSON(addBoard(apiRef.current + "/range?from_=" + from + "&to=" + to, boardRef.current))
-        .then(function (r) { setRoll(r); }).catch(function () { setRoll(null); })
+        .then(function (r) { setRoll(r); return loadTasks(from, to); }).catch(function () { setRoll(null); setTasks([]); })
         .then(function () { setRangeLoading(false); });
     }, []);
 
@@ -845,7 +846,6 @@
       setBoard(b); boardRef.current = b;
       setDigest(null); setRoll(null); setBuilt({}); setHistoryFirst(null);
       loadColors(b);
-      loadTasks(b);
       loadHistoryAndEnsure(b);
       if (tab === "day") {
         loadDay(date || "today").then(function (r) { if (r && r.date) setDate(r.date); });
@@ -915,7 +915,7 @@
       content = h("div", { className: "brf-day-layout" }, sidebar, dayBody);
     } else {
       var rangeBody = (rangeLoading || !roll) ? h(Skeleton)
-        : h(RangeView, { roll: roll, title: tab === "month" ? "Month" : "Week", target: ticketBase, period: tab });
+        : h(RangeView, { roll: roll, title: tab === "month" ? "Month" : "Week", target: ticketBase, period: tab, tasks: tasks, tasksLoading: tasksLoading });
       var nav = null;
       if (tab === "month") {
         var curMonth = ymd(new Date(), tz).slice(0, 7);
