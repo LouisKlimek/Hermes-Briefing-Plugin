@@ -2926,7 +2926,7 @@ def _fmt_deadline(deadline, tz: str) -> str:
 
 
 def build_task_view(src: KanbanSource) -> dict:
-    """Return the current board snapshot for the read-only Tasks tab.
+    """Return the current board snapshot for the read-only report task view.
 
     Keep the response close to the actual kanban schema but make the few
     derived presentation fields explicit: board name from the namespaced ID,
@@ -3019,7 +3019,7 @@ if router is not None:
 
     @router.get("/tasks")
     def tasks(board: str = "all"):
-        """Read-only current task snapshot for the grouped Tasks tab."""
+        """Read-only current task snapshot for the report task view."""
         cfg = load_config()
         src = KanbanSource(cfg, None if board in (None, "", "all") else board)
         try:
