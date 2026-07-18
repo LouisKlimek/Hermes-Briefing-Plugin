@@ -96,11 +96,12 @@ class BoardSourceTests(unittest.TestCase):
     def test_period_task_view_uses_only_done_or_blocked_transitions_in_window(self):
         done = api.Task("alpha::done", "Done in range", "done", "lead", "", "high", 10)
         blocked = api.Task("alpha::blocked", "Blocked in range", "blocked", "worker", "", "normal", 20)
+        failed = api.Task("alpha::failed", "Failed in range", "failed", "worker", "", "normal", 25)
         stale = api.Task("alpha::stale", "Stale completion", "done", "lead", "", "low", 30)
         no_lifecycle = api.Task("alpha::no-lifecycle", "No lifecycle event", "blocked", "worker", "", "low", 40)
 
         class Source:
-            def fetch_tasks(self): return {t.id: t for t in (done, blocked, stale, no_lifecycle)}
+            def fetch_tasks(self): return {t.id: t for t in (done, blocked, failed, stale, no_lifecycle)}
             def fetch_links(self): return [(done.id, blocked.id)]
             def fetch_comments(self, task_id): return []
             def fetch_events(self, start, end):
@@ -108,6 +109,7 @@ class BoardSourceTests(unittest.TestCase):
                     api.Event(1, stale.id, "completed", {}, 50, None),
                     api.Event(2, done.id, "status_changed", {"to": "done"}, 150, None),
                     api.Event(3, blocked.id, "status_changed", {"to": "blocked"}, 160, None),
+                    api.Event(4, failed.id, "failed", {}, 170, None),
                 ]
                 return [event for event in events if start <= event.ts < end]
 

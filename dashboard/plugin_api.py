@@ -2947,7 +2947,7 @@ def build_task_view(src: KanbanSource, start_ts: int | None = None,
         assert start_ts is not None and end_ts is not None
         for event in src.fetch_events(start_ts, end_ts):
             bucket = event_bucket(event)
-            if event.task_id not in tasks or bucket not in ("done", "blocked", "failed"):
+            if event.task_id not in tasks or bucket not in ("done", "blocked"):
                 continue
             prior = transitions.get(event.task_id)
             if prior is None or (event.ts, str(event.id)) >= (prior.ts, str(prior.id)):
