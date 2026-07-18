@@ -2925,6 +2925,45 @@ def _fmt_deadline(deadline, tz: str) -> str:
         return str(deadline) if deadline else ""
 
 
+def build_task_view(src: KanbanSource) -> dict:
+    """Return the current board snapshot for the read-only Tasks tab.
+
+    Keep the response close to the actual kanban schema but make the few
+    derived presentation fields explicit: board name from the namespaced ID,
+    comment count, parent/child links, and the latest completion transition.
+    """
+    tasks = src.fetch_tasks()
+    links = src.fetch_links()
+    parents = {child: parent for parent, child in links if child in tasks and parent in tasks}
+    children: dict[str, list[str]] = {}
+    for child, parent in parents.items():
+        children.setdefault(parent, []).append(child)
+
+    now = int(time.time())
+    completed: dict[str, int] = {}
+    for event in src.fetch_events(0, now + 1):
+        if event.task_id in tasks and _bucket_ev(event.kind, event.data) == "done":
+            completed[event.task_id] = max(completed.get(event.task_id, 0), event.ts)
+
+    rows = []
+    for task in tasks.values():
+        task_id = task.id
+        rows.append({
+            "id": task_id,
+            "title": task.title,
+            "status": task.status,
+            "priority": task.priority,
+            "assignee": task.assignee,
+            "board": _BoardSource.slug_of(task_id),
+            "created_at": task.created or None,
+            "completed_at": completed.get(task_id),
+            "comment_count": len(src.fetch_comments(task_id)),
+            "parent_id": parents.get(task_id),
+            "child_ids": sorted(children.get(task_id, [])),
+        })
+    return {"tasks": rows}
+
+
 # ---------------------------------------------------------------- routes
 
 if router is not None:
@@ -2975,6 +3014,16 @@ if router is not None:
         src = KanbanSource(cfg, None if board in (None, "", "all") else board)
         try:
             return {"status_colors": src.status_colors()}
+        finally:
+            src.close()
+
+    @router.get("/tasks")
+    def tasks(board: str = "all"):
+        """Read-only current task snapshot for the grouped Tasks tab."""
+        cfg = load_config()
+        src = KanbanSource(cfg, None if board in (None, "", "all") else board)
+        try:
+            return build_task_view(src)
         finally:
             src.close()
 
