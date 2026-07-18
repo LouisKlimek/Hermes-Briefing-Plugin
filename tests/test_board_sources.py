@@ -131,6 +131,40 @@ class BoardSourceTests(unittest.TestCase):
 
         self.assertEqual(api.build_task_view(Source(), 100, 200), {"tasks": []})
 
+    def test_tasklist_list_identity_is_exposed_separately_from_the_board(self):
+        task = api.Task("alpha::done", "Done", "done", "lead", "", "high", 10,
+                        list_name="Client delivery")
+
+        class Source:
+            def fetch_tasks(self): return {task.id: task}
+            def fetch_links(self): return []
+            def fetch_comments(self, task_id): return []
+            def fetch_events(self, start, end):
+                return [api.Event(1, task.id, "status_changed", {"to": "done"}, 150, None)]
+
+        row = api.build_task_view(Source(), 100, 200)["tasks"][0]
+        self.assertEqual(row["board"], "alpha")
+        self.assertEqual(row["list"], "Client delivery")
+
+    def test_board_source_reads_tasklist_list_column_when_available(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Path(tmp) / "kanban.db"
+            make_board(db, "ticket", 100)
+            with sqlite3.connect(db) as conn:
+                conn.execute("ALTER TABLE tasks ADD COLUMN list_name TEXT")
+                conn.execute("UPDATE tasks SET list_name = 'Client delivery'")
+            source = api._BoardSource(api.Config(), db, "alpha")
+            try:
+                task = source.fetch_tasks()["alpha::ticket"]
+            finally:
+                source.close()
+            self.assertEqual(task.list_name, "Client delivery")
+
+    def test_report_chart_prefers_tasklist_list_identity_over_board(self):
+        bundle = (Path(__file__).parents[1] / "dashboard" / "dist" / "index.js").read_text()
+        self.assertIn('task.list || task.board || "Default list"', bundle)
+        self.assertIn('task.list || task.board || "—"', bundle)
+
     def test_no_external_paths_preserves_profile_local_discovery(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "profile"
