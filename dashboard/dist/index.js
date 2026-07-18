@@ -372,9 +372,8 @@
   function lightWord(light) { return light === "blocked" ? "blocked" : light === "waiting" ? "waiting" : "on track"; }
 
   function Overview(props) {
-    var ov = props.overview || {}, vf = props.verification || {};
+    var ov = props.overview || {};
     var ti = ov.team_input || {};
-    var vcolor = (vf.red > 0) ? "#d14a4a" : "#3fb97d";
     return h("div", { style: { marginBottom: "0.85rem" } },
       (ov.board_lights && ov.board_lights.length) ? h("div", { style: { display: "flex", flexWrap: "wrap", gap: "0.4rem", marginBottom: "0.6rem" } },
         ov.board_lights.map(function (b, i) {
@@ -384,21 +383,7 @@
             b.board, h("span", { style: { color: MUTED } }, lightWord(b.light)));
         })) : null,
       h("div", { style: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: "0.9rem" } },
-        h("span", { style: { display: "inline-flex", alignItems: "center", gap: "0.4rem", fontSize: "0.82rem", fontWeight: 600 } },
-          h("span", { style: { width: "9px", height: "9px", borderRadius: "999px", background: vcolor } }),
-          "System " + (vf.green || 0) + "/" + (vf.total || 12) + " green" + (vf.red ? " \u00b7 " + vf.red + " red" : "") + (vf.na ? " \u00b7 " + vf.na + " n/a" : "")),
-        (ti.new || ti.unrouted) ? h("span", { style: { fontSize: "0.78rem", color: MUTED } }, "Team: " + (ti.new || 0) + " new" + (ti.unrouted ? " \u00b7 " + ti.unrouted + " unrouted" : "")) : null));
-  }
-
-  function VerificationList(props) {
-    var vf = props.verification || {}, checks = vf.checks || [];
-    var dot = { green: "#22c55e", red: "#ef4444", na: "#6b7280" };
-    return h("div", null, checks.map(function (c, i) {
-      return h("div", { key: i, style: { display: "flex", alignItems: "center", gap: "0.5rem", padding: "0.25rem 0", fontSize: "0.8rem" } },
-        h("span", { style: { width: "8px", height: "8px", borderRadius: "999px", background: dot[c.status] || "#6b7280", flex: "0 0 auto" } }),
-        h("span", { style: { fontWeight: 600, minWidth: "11rem" } }, c.label),
-        h("span", { style: { color: MUTED } }, c.status === "na" ? "n/a \u2014 " + (c.detail || "") : (c.status + " \u00b7 " + (c.detail || ""))));
-    }));
+        (ti.new || ti.unrouted) ? h("span", { style: { fontSize: "0.78rem", color: MUTED } }, "Team: " + (ti.new || 0) + " new" + (ti.unrouted ? " · " + ti.unrouted + " unrouted" : "")) : null));
   }
 
   function fmtDur(s) { if (s == null) return "\u2014"; return s >= 60 ? (s / 60).toFixed(1) + " min" : Math.round(s) + " s"; }
@@ -477,6 +462,105 @@
     }));
   }
 
+  function priorityColor(priority) {
+    var value = String(priority == null ? "" : priority).toLowerCase();
+    if (value === "urgent" || value === "high" || Number(priority) >= 3) return "#ef4444";
+    if (value === "normal" || value === "medium" || Number(priority) === 2) return "#f59e0b";
+    return "#6b7280";
+  }
+  function taskDate(ts) {
+    if (!ts) return "—";
+    try { return new Date(ts * 1000).toLocaleDateString(); } catch (e) { return "—"; }
+  }
+  function taskStatusBucket(status) {
+    var value = canonStatus(status);
+    if (/(done|complete|finish|close|resolve|archiv)/.test(value)) return "done";
+    if (/(block|fail|timeout|error|review|approv|wait)/.test(value)) return "blocked";
+    return null;
+  }
+  function TaskListChart(props) {
+    if (!props.target || props.target.kind !== "tasklist") return null;
+    var lists = {};
+    (props.tasks || []).forEach(function (task) {
+      var bucket = taskStatusBucket(task.status); if (!bucket) return;
+      var name = task.board || "Default";
+      if (!lists[name]) lists[name] = { name: name, done: 0, blocked: 0 };
+      lists[name][bucket]++;
+    });
+    var rows = Object.keys(lists).map(function (name) { return lists[name]; });
+    if (!rows.length) return null;
+    var max = Math.max.apply(null, rows.map(function (row) { return row.done + row.blocked; }).concat([1]));
+    return h("section", { className: "brf-task-chart", "aria-label": "TaskList status by list" },
+      h("div", { className: "brf-task-chart-title" }, "TaskList status by list"),
+      h("div", { className: "brf-task-chart-legend" }, h("span", null, h("i", { className: "brf-task-dot", style: { background: "#22c55e" } }), " Done"), h("span", null, h("i", { className: "brf-task-dot", style: { background: "#ef4444" } }), " Blocked"), h("span", null, "Counts")),
+      h("div", { className: "brf-task-chart-rows" }, rows.map(function (row) {
+        var total = row.done + row.blocked;
+        return h("div", { key: row.name, className: "brf-task-chart-row" },
+          h("span", { className: "brf-task-chart-label", title: row.name }, row.name),
+          h("div", { className: "brf-task-chart-stack", title: total + " tasks" },
+            row.done ? h("i", { style: { width: (row.done / max * 100) + "%", background: "#22c55e" } }) : null,
+            row.blocked ? h("i", { style: { width: (row.blocked / max * 100) + "%", background: "#ef4444" } }) : null),
+          h("span", { className: "brf-task-chart-count" }, total));
+      })));
+  }
+  function TaskListView(props) {
+    var sQuery = useState(""); var query = sQuery[0], setQuery = sQuery[1];
+    var sSort = useState("created"); var sort = sSort[0], setSort = sSort[1];
+    var sGroups = useState({}); var groupsOpen = sGroups[0], setGroupsOpen = sGroups[1];
+    var sChildren = useState({}); var childrenOpen = sChildren[0], setChildrenOpen = sChildren[1];
+    var all = props.tasks || [], needle = query.trim().toLowerCase();
+    var visible = all.filter(function (task) {
+      return !needle || [task.title, task.status, task.assignee, task.board].join(" ").toLowerCase().indexOf(needle) >= 0;
+    });
+    var byId = {}; visible.forEach(function (task) { byId[task.id] = task; });
+    var children = {};
+    visible.forEach(function (task) { if (task.parent_id && byId[task.parent_id]) (children[task.parent_id] || (children[task.parent_id] = [])).push(task); });
+    function sorted(rows) { return rows.slice().sort(function (a, b) {
+      if (sort === "title") return String(a.title).localeCompare(String(b.title));
+      return (b.created_at || 0) - (a.created_at || 0);
+    }); }
+    var statusOrder = [], statusGroups = {};
+    visible.forEach(function (task) {
+      var nested = task.parent_id && (children[task.parent_id] || []).some(function (child) { return child.id === task.id; });
+      if (nested) return;
+      var status = task.status || "unknown";
+      if (!statusGroups[status]) { statusGroups[status] = []; statusOrder.push(status); }
+      statusGroups[status].push(task);
+    });
+    function row(task, depth) {
+      var childRows = sorted(children[task.id] || []), hasChildren = childRows.length > 0;
+      var isOpen = !!childrenOpen[task.id], target = ticketHref(task.id, props.target);
+      return [h("div", { className: "brf-task-row", key: task.id, style: { "--task-depth": depth } },
+        h("div", { className: "brf-task-title", "data-label": "Name" },
+          hasChildren ? h("button", { className: "brf-task-disclosure", onClick: function () { setChildrenOpen(function (old) { var next = Object.assign({}, old); next[task.id] = !next[task.id]; return next; }); }, "aria-label": (isOpen ? "Collapse" : "Expand") + " child tasks" }, isOpen ? "⌄" : "›") : h("span", { className: "brf-task-disclosure brf-task-disclosure-empty" }, ""),
+          h("a", { href: target.url, className: "brf-task-link" }, task.title || task.id),
+          h("span", { className: "brf-task-comments", title: (task.comment_count || 0) + " comments" }, "💬 " + (task.comment_count || 0))),
+        h("div", { className: "brf-task-status", "data-label": "Status" }, h(StatusBadge, { status: task.status, label: task.status || "Unknown" })),
+        h("div", { className: "brf-task-priority", "data-label": "Priority" }, h("span", { className: "brf-task-dot", style: { background: priorityColor(task.priority) } }), task.priority == null || task.priority === "" ? "—" : String(task.priority)),
+        h("div", { className: "brf-task-assignee", "data-label": "Assignee" }, task.assignee || "—"),
+        h("div", { className: "brf-task-board", "data-label": "Board" }, task.board || "—"),
+        h("div", { className: "brf-task-age", "data-label": "Created" }, task.created_at ? timeAgo(task.created_at) : "—"),
+        h("div", { className: "brf-task-completed", "data-label": "Completed" }, task.completed_at ? taskDate(task.completed_at) : "—")),
+        hasChildren && isOpen ? childRows.map(function (child) { return row(child, depth + 1); }) : []];
+    }
+    if (props.loading) return h(Skeleton);
+    return h("div", { className: "brf-task-view" },
+      h("div", { className: "brf-task-controls" },
+        h("input", { type: "search", value: query, onChange: function (e) { setQuery(e.target.value); }, placeholder: "Search tasks…", "aria-label": "Search tasks" }),
+        h("select", { value: sort, onChange: function (e) { setSort(e.target.value); }, "aria-label": "Sort tasks" },
+          h("option", { value: "created" }, "Newest first"), h("option", { value: "title" }, "Title"))),
+      h(TaskListChart, { tasks: all, target: props.target }),
+      !visible.length ? h("div", { className: "brf-task-empty" }, "No tasks match this view.") : statusOrder.map(function (status) {
+        var isOpen = groupsOpen[status] !== false, rows = statusGroups[status];
+        return h("section", { className: "brf-task-group", key: status },
+          h("button", { className: "brf-task-group-header", onClick: function () { setGroupsOpen(function (old) { var next = Object.assign({}, old); next[status] = !isOpen; return next; }); }, "aria-expanded": isOpen },
+            h("span", { className: "brf-task-chevron" }, isOpen ? "⌄" : "›"), h("span", { className: "brf-task-dot", style: { background: resolveColor(status) } }), h("strong", null, status), h("span", null, rows.length)),
+          isOpen ? h("div", { className: "brf-task-table" },
+            h("div", { className: "brf-task-head" }, ["Name", "Status", "Priority", "Assignee", "Board", "Created", "Completed"].map(function (label) { return h("span", { key: label }, label); })),
+            sorted(rows.filter(function (task) { return !task.parent_id || !(children[task.parent_id] || []).some(function (child) { return child.id === task.id; }); })).map(function (task) { return row(task, 0); })) : null);
+      }));
+  }
+
   function DigestView(props) {
     var digest = props.digest, building = props.building;
     var hd = digest.header || {}, cost = digest.cost || {}, sys = digest.system || {};
@@ -517,10 +601,7 @@
         ? h(Section, { title: "Insights (" + digest.learned.length + ")" }, h(LearnedCards, { items: digest.learned, target: props.target }))
         : null,
       (digest.models && digest.models.total_runs)
-        ? h(Section, { title: "Models \u00b7 " + (digest.models.by_profile.length) + " profiles" }, h(ModelsTable, { models: digest.models }))
-        : null,
-      (digest.verification && digest.verification.checks)
-        ? h(Section, { title: "Verification \u00b7 " + (digest.verification.green || 0) + "/" + (digest.verification.total || 12) + " green", defaultCollapsed: true }, h(VerificationList, { verification: digest.verification }))
+        ? h(Section, { title: "Models · " + (digest.models.by_profile.length) + " profiles" }, h(ModelsTable, { models: digest.models }))
         : null,
       h(Section, { title: "Cost" },
         h(BudgetBar, { label: "Today", used: cost.today_eur, budget: cost.budget_daily }),
@@ -601,6 +682,8 @@
     var sDL = useState(false); var dayLoading = sDL[0], setDayLoading = sDL[1];
     var sRoll = useState(null); var roll = sRoll[0], setRoll = sRoll[1];
     var sRL = useState(false); var rangeLoading = sRL[0], setRangeLoading = sRL[1];
+    var sTasks = useState([]); var tasks = sTasks[0], setTasks = sTasks[1];
+    var sTL = useState(false); var tasksLoading = sTL[0], setTasksLoading = sTL[1];
     var sBusy = useState(""); var busyId = sBusy[0], setBusyId = sBusy[1];
     var sApi = useState(null); var apiBase = sApi[0], setApiBase = sApi[1];
     var apiRef = useRef(null); apiRef.current = apiBase;
@@ -623,6 +706,13 @@
         var m = {}; (r && r.digests || []).forEach(function (d) { m[d.date] = d; });
         setBuilt(m); return m;
       }).catch(function () { return {}; });
+    }, []);
+
+    var loadTasks = useCallback(function (b) {
+      setTasksLoading(true);
+      return fetchJSON(addBoard(apiRef.current + "/tasks", b == null ? boardRef.current : b)).then(function (r) {
+        setTasks((r && r.tasks) || []);
+      }).catch(function () { setTasks([]); }).then(function () { setTasksLoading(false); });
     }, []);
 
     var loadDay = useCallback(function (d) {
@@ -662,6 +752,7 @@
       loadKanbanCss(function () { setColorsV(function (v) { return v + 1; }); });
       loadDay("today").then(function (r) { if (r && r.date) setDate(r.date); });
       loadList();
+      loadTasks(boardRef.current);
       loadHistoryAndEnsure(boardRef.current);
     }
 
@@ -740,6 +831,7 @@
       setBoard(b); boardRef.current = b;
       setDigest(null); setRoll(null); setBuilt({}); setHistoryFirst(null);
       loadColors(b);
+      loadTasks(b);
       loadHistoryAndEnsure(b);
       if (tab === "day") {
         loadDay(date || "today").then(function (r) { if (r && r.date) setDate(r.date); });
@@ -760,6 +852,8 @@
           setMonthCursor(cm); monthRef.current = cm;
         }
         loadRange("month");
+      } else if (t === "tasks") {
+        loadTasks(boardRef.current);
       } else if (t === "day" && !digest && date) loadDay(date);
     }
 
@@ -807,6 +901,8 @@
     var content;
     if (tab === "day") {
       content = h("div", { className: "brf-day-layout" }, sidebar, dayBody);
+    } else if (tab === "tasks") {
+      content = h(TaskListView, { tasks: tasks, loading: tasksLoading, target: ticketBase });
     } else {
       var rangeBody = (rangeLoading || !roll) ? h(Skeleton)
         : h(RangeView, { roll: roll, title: tab === "month" ? "Month" : "Week", target: ticketBase, period: tab });
@@ -845,6 +941,7 @@
           h(TabButton, { label: "Day", active: tab === "day", onClick: function () { switchTab("day"); } }),
           h(TabButton, { label: "Week", active: tab === "week", onClick: function () { switchTab("week"); } }),
           h(TabButton, { label: "Month", active: tab === "month", onClick: function () { switchTab("month"); } }),
+          h(TabButton, { label: "Tasks", active: tab === "tasks", onClick: function () { switchTab("tasks"); } }),
           boards.length > 1 ? h("select", {
             value: board, onChange: function (e) { changeBoard(e.target.value); },
             title: "Board",

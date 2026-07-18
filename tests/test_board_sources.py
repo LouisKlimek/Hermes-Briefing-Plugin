@@ -41,6 +41,51 @@ def make_board(path: Path, task_id: str, ts: int) -> None:
 
 
 class BoardSourceTests(unittest.TestCase):
+    def test_task_view_uses_real_task_fields_and_derives_comments_children_and_completion(self):
+        parent = api.Task("alpha::parent", "Parent", "done", "lead", "", "high", 100)
+        child = api.Task("alpha::child", "Child", "blocked", "worker", "", "normal", 200)
+
+        class Source:
+            def fetch_tasks(self): return {parent.id: parent, child.id: child}
+            def fetch_links(self): return [(parent.id, child.id)]
+            def fetch_events(self, _start, _end):
+                return [api.Event(1, parent.id, "completed", {}, 300, None), api.Event(2, child.id, "completed", {}, 250, None)]
+            def fetch_comments(self, task_id): return [{"id": 1}] if task_id == parent.id else []
+
+        rows = {row["id"]: row for row in api.build_task_view(Source())["tasks"]}
+        self.assertEqual(rows[parent.id]["board"], "alpha")
+        self.assertEqual(rows[parent.id]["comment_count"], 1)
+        self.assertEqual(rows[parent.id]["completed_at"], 300)
+        self.assertEqual(rows[parent.id]["child_ids"], [child.id])
+        self.assertEqual(rows[child.id]["parent_id"], parent.id)
+        self.assertEqual(rows[child.id]["status"], "blocked")
+        self.assertIsNone(rows[child.id]["completed_at"])
+
+    def test_task_view_reads_comments_links_and_completion_from_board_source(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "profile"
+            db = home / "kanban.db"
+            make_board(db, "parent", 100)
+            with sqlite3.connect(db) as conn:
+                conn.executescript("""
+                    CREATE TABLE task_comments (id INTEGER PRIMARY KEY, task_id TEXT, body TEXT);
+                    CREATE TABLE task_links (parent_id TEXT, child_id TEXT);
+                """)
+                conn.execute("INSERT INTO task_comments VALUES (1, 'parent', 'note')")
+                conn.execute("INSERT INTO tasks VALUES ('child', 'Child', 'blocked', 'worker', '', 1, 200, '')")
+                conn.execute("INSERT INTO task_links VALUES ('parent', 'child')")
+            src = api.KanbanSource(api.Config(hermes_home=home))
+            try:
+                rows = {row["id"]: row for row in api.build_task_view(src)["tasks"]}
+            finally:
+                src.close()
+            self.assertEqual(rows["default::parent"]["comment_count"], 1)
+            self.assertEqual(rows["default::parent"]["completed_at"], 100)
+            self.assertEqual(rows["default::parent"]["child_ids"], ["default::child"])
+            self.assertEqual(rows["default::child"]["comment_count"], 0)
+            self.assertEqual(rows["default::child"]["parent_id"], "default::parent")
+            self.assertEqual(rows["default::child"]["status"], "blocked")
+
     def test_no_external_paths_preserves_profile_local_discovery(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "profile"
