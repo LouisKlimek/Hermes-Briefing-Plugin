@@ -786,7 +786,7 @@
     var dayList = [];
     for (var i = 0; i < spanDays; i++) dayList.push(ymd(daysAgo(i), tz));
 
-    var sidebar = h("div", { style: { width: "150px", flex: "0 0 150px", borderRight: "1px solid var(--color-border)", paddingRight: "0.6rem", overflowY: "auto", maxHeight: "68vh" } },
+    var sidebar = h("div", { className: "brf-day-sidebar" },
       dayList.map(function (d, idx) {
         var active = d === date, b = built[d];
         var hasDone = b && (b.done || 0) > 0, hasOpen = b && (b.open || 0) > 0;
@@ -799,13 +799,14 @@
       }));
 
     var dayBody;
-    if (dayLoading && !digest) dayBody = h(Skeleton);
-    else if (!digest) dayBody = h("div", { style: { paddingLeft: "1rem", color: MUTED, fontSize: "0.85rem" } }, "No briefing.");
-    else dayBody = h(DigestView, { digest: digest, building: dayLoading || building, onRebuild: rebuild, target: ticketBase });
+    if (dayLoading && !digest) dayBody = h("div", { className: "brf-day-body" }, h(Skeleton));
+    else if (!digest) dayBody = h("div", { className: "brf-day-body brf-day-empty" }, "No briefing.");
+    else dayBody = h("div", { className: "brf-day-body" },
+      h(DigestView, { digest: digest, building: dayLoading || building, onRebuild: rebuild, target: ticketBase }));
 
     var content;
     if (tab === "day") {
-      content = h("div", { style: { display: "flex", gap: "0.5rem" } }, sidebar, dayBody);
+      content = h("div", { className: "brf-day-layout" }, sidebar, dayBody);
     } else {
       var rangeBody = (rangeLoading || !roll) ? h(Skeleton)
         : h(RangeView, { roll: roll, title: tab === "month" ? "Month" : "Week", target: ticketBase, period: tab });

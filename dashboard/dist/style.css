@@ -56,6 +56,30 @@
 .brf-card { transition: transform .15s ease, box-shadow .15s ease; }
 .brf-card:hover { transform: translateY(-1px); }
 
+/* Keep the desktop history/report split, but let report content shrink and wrap. */
+.brf-day-layout { display: flex; gap: .5rem; min-width: 0; }
+.brf-day-sidebar {
+  width: 150px; flex: 0 0 150px; min-width: 0;
+  border-right: 1px solid var(--color-border); padding-right: .6rem;
+  overflow-y: auto; max-height: 68vh;
+}
+.brf-day-sidebar .brf-card { box-sizing: border-box; max-width: 100%; overflow-wrap: anywhere; }
+.brf-day-body { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
+.brf-day-body button { max-width: 100%; white-space: normal; }
+.brf-day-empty { padding-left: 1rem; color: var(--color-muted-foreground, #888); font-size: .85rem; }
+
+@media (max-width: 640px) {
+  .brf-day-layout { flex-direction: column; }
+  .brf-day-sidebar {
+    width: 100%; flex-basis: auto; box-sizing: border-box;
+    border-right: 0; border-bottom: 1px solid var(--color-border);
+    padding-right: 0; padding-bottom: .6rem;
+    max-height: min(35vh, 15rem);
+  }
+  .brf-day-body { width: 100%; }
+  .brf-day-empty { padding-left: 0; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .brf-spinner, .brf-skel::after, .brf-progress-indeterminate::before,
   .brf-pulse, .brf-glow { animation: none !important; }
