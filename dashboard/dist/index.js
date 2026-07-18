@@ -472,6 +472,37 @@
     if (!ts) return "—";
     try { return new Date(ts * 1000).toLocaleDateString(); } catch (e) { return "—"; }
   }
+  function taskStatusBucket(status) {
+    var value = canonStatus(status);
+    if (/(done|complete|finish|close|resolve|archiv)/.test(value)) return "done";
+    if (/(block|fail|timeout|error|review|approv|wait)/.test(value)) return "blocked";
+    return null;
+  }
+  function TaskListChart(props) {
+    if (!props.target || props.target.kind !== "tasklist") return null;
+    var lists = {};
+    (props.tasks || []).forEach(function (task) {
+      var bucket = taskStatusBucket(task.status); if (!bucket) return;
+      var name = task.board || "Default";
+      if (!lists[name]) lists[name] = { name: name, done: 0, blocked: 0 };
+      lists[name][bucket]++;
+    });
+    var rows = Object.keys(lists).map(function (name) { return lists[name]; });
+    if (!rows.length) return null;
+    var max = Math.max.apply(null, rows.map(function (row) { return row.done + row.blocked; }).concat([1]));
+    return h("section", { className: "brf-task-chart", "aria-label": "TaskList status by list" },
+      h("div", { className: "brf-task-chart-title" }, "TaskList status by list"),
+      h("div", { className: "brf-task-chart-legend" }, h("span", null, h("i", { className: "brf-task-dot", style: { background: "#22c55e" } }), " Done"), h("span", null, h("i", { className: "brf-task-dot", style: { background: "#ef4444" } }), " Blocked"), h("span", null, "Counts")),
+      h("div", { className: "brf-task-chart-rows" }, rows.map(function (row) {
+        var total = row.done + row.blocked;
+        return h("div", { key: row.name, className: "brf-task-chart-row" },
+          h("span", { className: "brf-task-chart-label", title: row.name }, row.name),
+          h("div", { className: "brf-task-chart-stack", title: total + " tasks" },
+            row.done ? h("i", { style: { width: (row.done / max * 100) + "%", background: "#22c55e" } }) : null,
+            row.blocked ? h("i", { style: { width: (row.blocked / max * 100) + "%", background: "#ef4444" } }) : null),
+          h("span", { className: "brf-task-chart-count" }, total));
+      })));
+  }
   function TaskListView(props) {
     var sQuery = useState(""); var query = sQuery[0], setQuery = sQuery[1];
     var sSort = useState("created"); var sort = sSort[0], setSort = sSort[1];
@@ -483,16 +514,15 @@
     });
     var byId = {}; visible.forEach(function (task) { byId[task.id] = task; });
     var children = {};
-    visible.forEach(function (task) {
-      var parent = task.parent_id && byId[task.parent_id];
-      if (parent && (parent.status || "unknown") === (task.status || "unknown")) (children[task.parent_id] || (children[task.parent_id] = [])).push(task);
-    });
+    visible.forEach(function (task) { if (task.parent_id && byId[task.parent_id]) (children[task.parent_id] || (children[task.parent_id] = [])).push(task); });
     function sorted(rows) { return rows.slice().sort(function (a, b) {
       if (sort === "title") return String(a.title).localeCompare(String(b.title));
       return (b.created_at || 0) - (a.created_at || 0);
     }); }
     var statusOrder = [], statusGroups = {};
     visible.forEach(function (task) {
+      var nested = task.parent_id && (children[task.parent_id] || []).some(function (child) { return child.id === task.id; });
+      if (nested) return;
       var status = task.status || "unknown";
       if (!statusGroups[status]) { statusGroups[status] = []; statusOrder.push(status); }
       statusGroups[status].push(task);
@@ -519,6 +549,7 @@
         h("input", { type: "search", value: query, onChange: function (e) { setQuery(e.target.value); }, placeholder: "Search tasks…", "aria-label": "Search tasks" }),
         h("select", { value: sort, onChange: function (e) { setSort(e.target.value); }, "aria-label": "Sort tasks" },
           h("option", { value: "created" }, "Newest first"), h("option", { value: "title" }, "Title"))),
+      h(TaskListChart, { tasks: all, target: props.target }),
       !visible.length ? h("div", { className: "brf-task-empty" }, "No tasks match this view.") : statusOrder.map(function (status) {
         var isOpen = groupsOpen[status] !== false, rows = statusGroups[status];
         return h("section", { className: "brf-task-group", key: status },

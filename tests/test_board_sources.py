@@ -49,7 +49,7 @@ class BoardSourceTests(unittest.TestCase):
             def fetch_tasks(self): return {parent.id: parent, child.id: child}
             def fetch_links(self): return [(parent.id, child.id)]
             def fetch_events(self, _start, _end):
-                return [api.Event(1, parent.id, "completed", {}, 300, None)]
+                return [api.Event(1, parent.id, "completed", {}, 300, None), api.Event(2, child.id, "completed", {}, 250, None)]
             def fetch_comments(self, task_id): return [{"id": 1}] if task_id == parent.id else []
 
         rows = {row["id"]: row for row in api.build_task_view(Source())["tasks"]}
@@ -59,6 +59,7 @@ class BoardSourceTests(unittest.TestCase):
         self.assertEqual(rows[parent.id]["child_ids"], [child.id])
         self.assertEqual(rows[child.id]["parent_id"], parent.id)
         self.assertEqual(rows[child.id]["status"], "blocked")
+        self.assertIsNone(rows[child.id]["completed_at"])
 
     def test_task_view_reads_comments_links_and_completion_from_board_source(self):
         with tempfile.TemporaryDirectory() as tmp:

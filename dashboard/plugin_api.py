@@ -2942,7 +2942,7 @@ def build_task_view(src: KanbanSource) -> dict:
     now = int(time.time())
     completed: dict[str, int] = {}
     for event in src.fetch_events(0, now + 1):
-        if event.task_id in tasks and _bucket_ev(event.kind, event.data) == "done":
+        if event.task_id in tasks and _bucket_of(tasks[event.task_id].status) == "done" and _bucket_ev(event.kind, event.data) == "done":
             completed[event.task_id] = max(completed.get(event.task_id, 0), event.ts)
 
     rows = []
