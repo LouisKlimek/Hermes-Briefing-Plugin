@@ -483,15 +483,15 @@
     var lists = {};
     (props.tasks || []).forEach(function (task) {
       var bucket = taskStatusBucket(task.status); if (!bucket) return;
-      var name = task.board || "Default";
+      var name = task.board || "Default list";
       if (!lists[name]) lists[name] = { name: name, done: 0, blocked: 0 };
       lists[name][bucket]++;
     });
     var rows = Object.keys(lists).map(function (name) { return lists[name]; });
     if (!rows.length) return null;
     var max = Math.max.apply(null, rows.map(function (row) { return row.done + row.blocked; }).concat([1]));
-    return h("section", { className: "brf-task-chart", "aria-label": "TaskList status by list" },
-      h("div", { className: "brf-task-chart-title" }, "TaskList status by list"),
+    return h("section", { className: "brf-task-chart", "aria-label": "Task status by list" },
+      h("div", { className: "brf-task-chart-title" }, "Task status by list"),
       h("div", { className: "brf-task-chart-legend" }, h("span", null, h("i", { className: "brf-task-dot", style: { background: "#22c55e" } }), " Done"), h("span", null, h("i", { className: "brf-task-dot", style: { background: "#ef4444" } }), " Blocked"), h("span", null, "Counts")),
       h("div", { className: "brf-task-chart-rows" }, rows.map(function (row) {
         var total = row.done + row.blocked;
@@ -519,13 +519,11 @@
       if (sort === "title") return String(a.title).localeCompare(String(b.title));
       return (b.created_at || 0) - (a.created_at || 0);
     }); }
-    var statusOrder = [], statusGroups = {};
+    var listOrder = [], listGroups = {};
     visible.forEach(function (task) {
-      var nested = task.parent_id && (children[task.parent_id] || []).some(function (child) { return child.id === task.id; });
-      if (nested) return;
-      var status = task.status || "unknown";
-      if (!statusGroups[status]) { statusGroups[status] = []; statusOrder.push(status); }
-      statusGroups[status].push(task);
+      var list = task.board || "Default list";
+      if (!listGroups[list]) { listGroups[list] = []; listOrder.push(list); }
+      listGroups[list].push(task);
     });
     function row(task, depth) {
       var childRows = sorted(children[task.id] || []), hasChildren = childRows.length > 0;
@@ -538,7 +536,7 @@
         h("div", { className: "brf-task-status", "data-label": "Status" }, h(StatusBadge, { status: task.status, label: task.status || "Unknown" })),
         h("div", { className: "brf-task-priority", "data-label": "Priority" }, h("span", { className: "brf-task-dot", style: { background: priorityColor(task.priority) } }), task.priority == null || task.priority === "" ? "—" : String(task.priority)),
         h("div", { className: "brf-task-assignee", "data-label": "Assignee" }, task.assignee || "—"),
-        h("div", { className: "brf-task-board", "data-label": "Board" }, task.board || "—"),
+        h("div", { className: "brf-task-board", "data-label": "List" }, task.board || "—"),
         h("div", { className: "brf-task-age", "data-label": "Created" }, task.created_at ? timeAgo(task.created_at) : "—"),
         h("div", { className: "brf-task-completed", "data-label": "Completed" }, task.completed_at ? taskDate(task.completed_at) : "—")),
         hasChildren && isOpen ? childRows.map(function (child) { return row(child, depth + 1); }) : []];
@@ -550,14 +548,28 @@
         h("select", { value: sort, onChange: function (e) { setSort(e.target.value); }, "aria-label": "Sort tasks" },
           h("option", { value: "created" }, "Newest first"), h("option", { value: "title" }, "Title"))),
       h(TaskListChart, { tasks: all, target: props.target }),
-      !visible.length ? h("div", { className: "brf-task-empty" }, "No tasks match this view.") : statusOrder.map(function (status) {
-        var isOpen = groupsOpen[status] !== false, rows = statusGroups[status];
-        return h("section", { className: "brf-task-group", key: status },
-          h("button", { className: "brf-task-group-header", onClick: function () { setGroupsOpen(function (old) { var next = Object.assign({}, old); next[status] = !isOpen; return next; }); }, "aria-expanded": isOpen },
-            h("span", { className: "brf-task-chevron" }, isOpen ? "⌄" : "›"), h("span", { className: "brf-task-dot", style: { background: resolveColor(status) } }), h("strong", null, status), h("span", null, rows.length)),
-          isOpen ? h("div", { className: "brf-task-table" },
-            h("div", { className: "brf-task-head" }, ["Name", "Status", "Priority", "Assignee", "Board", "Created", "Completed"].map(function (label) { return h("span", { key: label }, label); })),
-            sorted(rows.filter(function (task) { return !task.parent_id || !(children[task.parent_id] || []).some(function (child) { return child.id === task.id; }); })).map(function (task) { return row(task, 0); })) : null);
+      !visible.length ? h("div", { className: "brf-task-empty" }, "No tasks match this report.") : listOrder.map(function (list) {
+        var listKey = "list::" + list, listOpen = groupsOpen[listKey] !== false, listTasks = listGroups[list];
+        var statusOrder = [], statusGroups = {};
+        listTasks.forEach(function (task) {
+          var nested = task.parent_id && (children[task.parent_id] || []).some(function (child) { return child.id === task.id; });
+          if (nested) return;
+          var status = task.status || "unknown";
+          if (!statusGroups[status]) { statusGroups[status] = []; statusOrder.push(status); }
+          statusGroups[status].push(task);
+        });
+        return h("section", { className: "brf-task-list", key: list },
+          h("button", { className: "brf-task-list-header", onClick: function () { setGroupsOpen(function (old) { var next = Object.assign({}, old); next[listKey] = !listOpen; return next; }); }, "aria-expanded": listOpen },
+            h("span", { className: "brf-task-chevron" }, listOpen ? "⌄" : "›"), h("strong", null, "List: " + list), h("span", null, listTasks.length + " tasks")),
+          listOpen ? statusOrder.map(function (status) {
+            var statusKey = "status::" + list + "::" + status, isOpen = groupsOpen[statusKey] !== false, rows = statusGroups[status];
+            return h("section", { className: "brf-task-group", key: statusKey },
+              h("button", { className: "brf-task-group-header", onClick: function () { setGroupsOpen(function (old) { var next = Object.assign({}, old); next[statusKey] = !isOpen; return next; }); }, "aria-expanded": isOpen },
+                h("span", { className: "brf-task-chevron" }, isOpen ? "⌄" : "›"), h("span", { className: "brf-task-dot", style: { background: resolveColor(status) } }), h("strong", null, status), h("span", null, rows.length)),
+              isOpen ? h("div", { className: "brf-task-table" },
+                h("div", { className: "brf-task-head" }, ["Name", "Status", "Priority", "Assignee", "List", "Created", "Completed"].map(function (label) { return h("span", { key: label }, label); })),
+                sorted(rows).map(function (task) { return row(task, 0); })) : null);
+          }) : null);
       }));
   }
 
@@ -597,6 +609,7 @@
                 var ach = colorChrome(resolveColor(t.status, "active"));
                 return h("a", { key: i, href: th.url, style: Object.assign({ fontSize: "0.78rem", textDecoration: "none", padding: "0.15rem 0.5rem", borderRadius: "999px" }, ach) }, t.title); })))
         : null,
+      h(Section, { title: "Tasks (" + ((props.tasks || []).length) + ")" }, h(TaskListView, { tasks: props.tasks, loading: props.tasksLoading, target: props.target })),
       (digest.learned && digest.learned.length)
         ? h(Section, { title: "Insights (" + digest.learned.length + ")" }, h(LearnedCards, { items: digest.learned, target: props.target }))
         : null,
@@ -853,8 +866,6 @@
           setMonthCursor(cm); monthRef.current = cm;
         }
         loadRange("month");
-      } else if (t === "tasks") {
-        loadTasks(boardRef.current);
       } else if (t === "day" && !digest && date) loadDay(date);
     }
 
@@ -897,13 +908,11 @@
     if (dayLoading && !digest) dayBody = h("div", { className: "brf-day-body" }, h(Skeleton));
     else if (!digest) dayBody = h("div", { className: "brf-day-body brf-day-empty" }, "No briefing.");
     else dayBody = h("div", { className: "brf-day-body" },
-      h(DigestView, { digest: digest, building: dayLoading || building, onRebuild: rebuild, target: ticketBase }));
+      h(DigestView, { digest: digest, building: dayLoading || building, onRebuild: rebuild, target: ticketBase, tasks: tasks, tasksLoading: tasksLoading }));
 
     var content;
     if (tab === "day") {
       content = h("div", { className: "brf-day-layout" }, sidebar, dayBody);
-    } else if (tab === "tasks") {
-      content = h(TaskListView, { tasks: tasks, loading: tasksLoading, target: ticketBase });
     } else {
       var rangeBody = (rangeLoading || !roll) ? h(Skeleton)
         : h(RangeView, { roll: roll, title: tab === "month" ? "Month" : "Week", target: ticketBase, period: tab });
@@ -942,7 +951,6 @@
           h(TabButton, { label: "Day", active: tab === "day", onClick: function () { switchTab("day"); } }),
           h(TabButton, { label: "Week", active: tab === "week", onClick: function () { switchTab("week"); } }),
           h(TabButton, { label: "Month", active: tab === "month", onClick: function () { switchTab("month"); } }),
-          h(TabButton, { label: "Tasks", active: tab === "tasks", onClick: function () { switchTab("tasks"); } }),
           boards.length > 1 ? h("select", {
             value: board, onChange: function (e) { changeBoard(e.target.value); },
             title: "Board",

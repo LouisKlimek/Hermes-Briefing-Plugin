@@ -41,6 +41,13 @@ def make_board(path: Path, task_id: str, ts: int) -> None:
 
 
 class BoardSourceTests(unittest.TestCase):
+    def test_report_embeds_the_grouped_task_view_without_a_tasks_tab(self):
+        bundle = (Path(__file__).parents[1] / "dashboard" / "dist" / "index.js").read_text()
+        self.assertIn('h(Section, { title: "Tasks ("', bundle)
+        self.assertIn('tasks: tasks, tasksLoading: tasksLoading', bundle)
+        self.assertIn('"List: " + list', bundle)
+        self.assertNotIn('label: "Tasks"', bundle)
+
     def test_task_view_uses_real_task_fields_and_derives_comments_children_and_completion(self):
         parent = api.Task("alpha::parent", "Parent", "done", "lead", "", "high", 100)
         child = api.Task("alpha::child", "Child", "blocked", "worker", "", "normal", 200)

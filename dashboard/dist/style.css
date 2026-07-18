@@ -70,10 +70,13 @@
 
 /* Grouped task table: dense desktop grid, labelled stacked rows on narrow screens. */
 .brf-task-view { min-width: 0; }
+.brf-task-list { border: 1px solid var(--color-border); border-radius: .55rem; overflow: hidden; margin-bottom: .55rem; background: var(--color-card); }
+.brf-task-list-header { width: 100%; display: flex; align-items: center; gap: .45rem; border: 0; background: var(--color-muted, rgba(127,127,127,.1)); color: inherit; cursor: pointer; padding: .55rem .65rem; text-align: left; font-size: .78rem; }
+.brf-task-list-header span:last-child { color: var(--color-muted-foreground, #888); font-size: .72rem; }
 .brf-task-controls { display: flex; flex-wrap: wrap; gap: .45rem; margin-bottom: .7rem; }
 .brf-task-controls input, .brf-task-controls select { min-width: 0; border: 1px solid var(--color-border); border-radius: .4rem; background: var(--color-card); color: inherit; padding: .32rem .5rem; font-size: .8rem; }
 .brf-task-controls input { flex: 1 1 15rem; }
-.brf-task-group { border: 1px solid var(--color-border); border-radius: .55rem; overflow: hidden; margin-bottom: .55rem; background: var(--color-card); }
+.brf-task-group { border-top: 1px solid var(--color-border); overflow: hidden; background: var(--color-card); }
 .brf-task-group-header { width: 100%; display: flex; align-items: center; gap: .45rem; border: 0; border-bottom: 1px solid var(--color-border); background: transparent; color: inherit; cursor: pointer; padding: .48rem .65rem; text-align: left; text-transform: uppercase; font-size: .72rem; letter-spacing: .05em; }
 .brf-task-group-header strong { font-size: inherit; }
 .brf-task-chevron { width: .7rem; }
