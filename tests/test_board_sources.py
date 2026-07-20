@@ -67,6 +67,16 @@ class BoardSourceTests(unittest.TestCase):
         self.assertIn('title: "Active (" + digest.in_progress.length', bundle)
         self.assertIn('title: "Tasks (" + ((props.tasks || []).length)', bundle)
 
+    def test_daily_models_follow_cost_and_low_priority_sections_start_collapsed(self):
+        bundle = (Path(__file__).parents[1] / "dashboard" / "dist" / "index.js").read_text()
+        daily_start = bundle.index("function DigestView")
+        range_start = bundle.index("function RangeView")
+        daily = bundle[daily_start:range_start]
+        self.assertLess(daily.index('title: "Cost"'), daily.index('title: "Models · " + (digest.models.by_profile.length)'))
+        self.assertIn('title: "Tasks (" + ((props.tasks || []).length) + ")", defaultCollapsed: true', daily)
+        self.assertIn('title: "Models · " + (digest.models.by_profile.length) + " profiles", defaultCollapsed: true', daily)
+        self.assertIn('title: "System", defaultCollapsed: true', daily)
+
     def test_task_view_uses_real_task_fields_and_derives_comments_children_and_completion(self):
         parent = api.Task("alpha::parent", "Parent", "done", "lead", "", "high", 100)
         child = api.Task("alpha::child", "Child", "blocked", "worker", "", "normal", 200)
