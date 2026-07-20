@@ -430,9 +430,10 @@
     return h("div", { style: { marginBottom: "0.55rem" } },
       h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "0.25rem" } },
         h("span", { style: { fontSize: "0.72rem", color: MUTED, textTransform: "uppercase", letterSpacing: "0.05em" } }, props.label),
-        h("span", { style: { fontSize: "0.78rem" } },
-          eur(used) + " / $" + budget.toFixed(0),
-          h("span", { style: { marginLeft: "0.45rem", fontWeight: 700, color: col } }, pct + "%"))),
+        props.editable
+          ? h(BudgetLimitEditor, { apiBase: props.apiBase, field: props.field, label: props.label + " limit", used: used, value: budget, onSaved: props.onSaved })
+          : h("span", { style: { fontSize: "0.78rem" } }, eur(used) + " / $" + budget.toFixed(0)),
+        h("span", { style: { marginLeft: "0.45rem", fontWeight: 700, color: col } }, pct + "%")),
       h("div", { style: { height: "9px", borderRadius: "999px", background: "var(--color-muted, rgba(127,127,127,0.18))", overflow: "hidden" } },
         h("div", { style: { height: "100%", width: pct + "%", borderRadius: "999px",
           background: "linear-gradient(90deg," + col + "," + col2 + ")",
@@ -441,34 +442,35 @@
   }
 
 
-  function BudgetEditor(props) {
+  function BudgetLimitEditor(props) {
     var sOpen = useState(false), open = sOpen[0], setOpen = sOpen[1];
-    var sDaily = useState(String(props.daily == null ? "" : props.daily)), daily = sDaily[0], setDaily = sDaily[1];
-    var sMonthly = useState(String(props.monthly == null ? "" : props.monthly)), monthly = sMonthly[0], setMonthly = sMonthly[1];
+    var sValue = useState(String(props.value == null ? "" : props.value)), value = sValue[0], setValue = sValue[1];
     var sError = useState(""), error = sError[0], setError = sError[1];
     var sSaving = useState(false), saving = sSaving[0], setSaving = sSaving[1];
-    useEffect(function () { if (!open) { setDaily(String(props.daily == null ? "" : props.daily)); setMonthly(String(props.monthly == null ? "" : props.monthly)); } }, [props.daily, props.monthly, open]);
+    useEffect(function () { if (!open) setValue(String(props.value == null ? "" : props.value)); }, [props.value, open]);
     function close() { if (!saving) { setOpen(false); setError(""); } }
     function save() {
-      var d = Number(daily), m = Number(monthly);
-      if (!daily.trim() || !monthly.trim() || !Number.isFinite(d) || !Number.isFinite(m) || d < 0 || m < 0) {
-        setError("Enter non-negative numeric daily and monthly EUR limits."); return;
+      var limit = Number(value);
+      if (!value.trim() || !Number.isFinite(limit) || limit < 0) {
+        setError("Enter a non-negative numeric " + props.label.toLowerCase() + " in EUR."); return;
       }
       setSaving(true); setError("");
-      fetch(props.apiBase + "/budget-limits", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ daily_eur: d, monthly_eur: m }) })
-        .then(function (r) { return r.json().catch(function () { return {}; }).then(function (body) { if (!r.ok) throw new Error(body.detail || "Could not save budget limits."); return body; }); })
+      var body = {}; body[props.field] = limit;
+      fetch(props.apiBase + "/budget-limits", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) })
+        .then(function (r) { return r.json().catch(function () { return {}; }).then(function (body) { if (!r.ok) throw new Error(body.detail || "Could not save budget limit."); return body; }); })
         .then(function (limits) { setOpen(false); props.onSaved(limits); })
-        .catch(function (err) { setError(err && err.message ? err.message : "Could not save budget limits."); })
+        .catch(function (err) { setError(err && err.message ? err.message : "Could not save budget limit."); })
         .then(function () { setSaving(false); });
     }
-    return h("div", { style: { marginTop: "0.35rem" } },
-      h("button", { type: "button", onClick: function () { setOpen(true); }, title: "Edit daily and monthly budget limits", "aria-label": "Edit daily and monthly budget limits", style: { border: "1px solid var(--color-border)", borderRadius: "0.35rem", background: "var(--color-card)", color: "inherit", cursor: "pointer", padding: "0.18rem 0.45rem", fontSize: "0.82rem" } }, "✎"),
-      open ? h("div", { role: "dialog", "aria-label": "Edit budget limits", style: { marginTop: "0.45rem", padding: "0.6rem", border: "1px solid var(--color-border)", borderRadius: "0.45rem", background: "var(--color-card)" } },
-        h("div", { style: { fontSize: "0.8rem", fontWeight: 600, marginBottom: "0.4rem" } }, "Budget limits (EUR)"),
-        h("label", { style: { display: "block", fontSize: "0.76rem", marginBottom: "0.35rem" } }, "Daily limit", h("input", { type: "number", min: "0", step: "any", value: daily, onChange: function (e) { setDaily(e.target.value); }, "aria-label": "Daily budget limit in EUR", style: { display: "block", width: "100%", marginTop: "0.15rem" } })),
-        h("label", { style: { display: "block", fontSize: "0.76rem", marginBottom: "0.45rem" } }, "Monthly limit", h("input", { type: "number", min: "0", step: "any", value: monthly, onChange: function (e) { setMonthly(e.target.value); }, "aria-label": "Monthly budget limit in EUR", style: { display: "block", width: "100%", marginTop: "0.15rem" } })),
-        error ? h("div", { role: "alert", style: { color: "#d14a4a", fontSize: "0.76rem", marginBottom: "0.4rem" } }, error) : null,
-        h("div", { style: { display: "flex", gap: "0.4rem" } }, h("button", { type: "button", onClick: save, disabled: saving }, saving ? "Saving…" : "Save"), h("button", { type: "button", onClick: close, disabled: saving }, "Cancel"))) : null);
+    return open
+      ? h("div", { style: { display: "flex", alignItems: "center", gap: "0.3rem" } },
+          h("input", { type: "number", min: "0", step: "any", value: value, onChange: function (e) { setValue(e.target.value); }, "aria-label": props.label + " in EUR", style: { width: "5.5rem" } }),
+          h("button", { type: "button", onClick: save, disabled: saving }, saving ? "Saving…" : "Save"),
+          h("button", { type: "button", onClick: close, disabled: saving, "aria-label": "Cancel editing " + props.label.toLowerCase() }, "Cancel"),
+          error ? h("span", { role: "alert", style: { color: "#d14a4a", fontSize: "0.76rem" } }, error) : null)
+      : h("div", { style: { display: "flex", alignItems: "baseline", gap: "0.3rem" } },
+          h("span", { style: { fontSize: "0.78rem" } }, eur(props.used) + " / $" + (Number(props.value) || 0).toFixed(0)),
+          h("button", { type: "button", onClick: function () { setOpen(true); }, title: "Edit " + props.label.toLowerCase(), "aria-label": "Edit " + props.label.toLowerCase(), style: { border: "0", background: "transparent", color: "inherit", cursor: "pointer", padding: "0", fontSize: "0.82rem" } }, "✎"));
   }
 
   function priorityColor(priority) {
@@ -633,10 +635,9 @@
         ? h(Section, { title: "Models · " + (digest.models.by_profile.length) + " profiles" }, h(ModelsTable, { models: digest.models }))
         : null,
       h(Section, { title: "Cost" },
-        h(BudgetBar, { label: "Today", used: cost.today_eur, budget: cost.budget_daily }),
-        h(BudgetBar, { label: "This month", used: cost.month_eur, budget: cost.budget_monthly }),
+        h(BudgetBar, { label: "Today", editable: true, field: "daily_eur", used: cost.today_eur, budget: cost.budget_daily, apiBase: props.apiBase, onSaved: props.onBudgetSaved }),
+        h(BudgetBar, { label: "This month", editable: true, field: "monthly_eur", used: cost.month_eur, budget: cost.budget_monthly, apiBase: props.apiBase, onSaved: props.onBudgetSaved }),
         h("div", { style: { fontSize: "0.76rem", color: MUTED } }, (cost.runs || 0) + " runs"),
-        h(BudgetEditor, { apiBase: props.apiBase, daily: cost.budget_daily, monthly: cost.budget_monthly, onSaved: props.onBudgetSaved }),
         cost.caveat ? h("div", { style: { fontSize: "0.74rem", color: MUTED, marginTop: "0.2rem" } }, "⚠ " + cost.caveat) : null),
       h(Section, { title: "System" }, h("div", null,
         (sys.notes && sys.notes.length) ? h("div", { style: { fontSize: "0.8rem", color: "#d14a4a", marginBottom: "0.5rem", fontWeight: 600 } }, sys.notes.join(", ")) : null,
