@@ -14,6 +14,11 @@ language: en            # en | de
 # external_board_dbs:
 #   - /srv/approved-boards/operations/kanban.db
 
+# TaskList membership is read from <hermes_home>/tasklist/lists.db when the
+# plugin is installed. Set this only when that read-only DB lives elsewhere.
+# Missing or incompatible TaskList DBs render tasks as "No List".
+# tasklist_db: /srv/hermes/tasklist/lists.db
+
 # Local times the systemd timer / cron builds the briefing — used to show
 # "next build" in the dashboard. Match these to your timer.
 schedule:
