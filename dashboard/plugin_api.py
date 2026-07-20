@@ -132,6 +132,9 @@ class SMTPConfig:
 class Config:
     hermes_home: Path = field(default_factory=_hermes_home)
     kanban_db: Path | None = None          # default: <hermes_home>/kanban.db
+    # Optional explicit TaskList overlay DB. Defaults to the co-installed
+    # TaskList plugin's <hermes_home>/tasklist/lists.db location.
+    tasklist_db: Path | None = None
     # Explicit extra sources for profile-scoped dashboards. Each root contains
     # <slug>/kanban.db; each path is one allowed board DB. `kanban_db` remains
     # a single-board override and takes precedence over both lists.
@@ -161,6 +164,9 @@ class Config:
     def resolved_kanban_db(self) -> Path:
         return Path(self.kanban_db) if self.kanban_db else self.hermes_home / "kanban.db"
 
+    def resolved_tasklist_db(self) -> Path:
+        return Path(self.tasklist_db) if self.tasklist_db else self.hermes_home / "tasklist" / "lists.db"
+
     def resolved_reports_dir(self) -> Path:
         p = Path(self.reports_dir) if self.reports_dir else self.hermes_home / "briefing"
         p.mkdir(parents=True, exist_ok=True)
@@ -178,7 +184,7 @@ def _path_list(value: Any) -> list[Path]:
 
 
 def _apply_yaml(cfg: Config, data: dict[str, Any]) -> None:
-    for k in ("timezone", "language", "kanban_db", "reports_dir"):
+    for k in ("timezone", "language", "kanban_db", "tasklist_db", "reports_dir"):
         if data.get(k) is not None:
             setattr(cfg, k, data[k])
     if "external_board_roots" in data:
@@ -216,6 +222,7 @@ def _apply_yaml(cfg: Config, data: dict[str, Any]) -> None:
 def _apply_env(cfg: Config) -> None:
     e = os.environ.get
     if e("REPORTS_KANBAN_DB"):       cfg.kanban_db = e("REPORTS_KANBAN_DB")
+    if e("REPORTS_TASKLIST_DB"):     cfg.tasklist_db = Path(e("REPORTS_TASKLIST_DB"))
     if roots := e("REPORTS_EXTERNAL_BOARD_ROOTS"):
         cfg.external_board_roots = _path_list(roots.split(os.pathsep))
     if dbs := e("REPORTS_EXTERNAL_BOARD_DBS"):
@@ -712,6 +719,37 @@ def _to_epoch(v: Any) -> int:
 _BOARD_SEP = "::"  # namespaces task ids per board so ids never collide across boards
 
 
+def tasklist_memberships(cfg: Config) -> dict[tuple[str, str], str]:
+    """Best-effort, read-only TaskList membership lookup.
+
+    TaskList stores its human list overlay separately from kanban.db. Missing
+    plugins, databases, or expected tables intentionally yield no memberships,
+    allowing callers to use a truthful ``No List`` fallback without breaking a
+    report.
+    """
+    path = cfg.resolved_tasklist_db()
+    if not path.is_file():
+        return {}
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=5)
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if not {"lists", "membership"}.issubset(tables):
+            return {}
+        rows = conn.execute(
+            "SELECT membership.board, membership.task_id, lists.name "
+            "FROM membership JOIN lists "
+            "ON lists.id = membership.list_id AND lists.board = membership.board"
+        ).fetchall()
+        return {(str(board or "default"), str(task_id)): str(name)
+                for board, task_id, name in rows if name and str(name).strip()}
+    except (OSError, sqlite3.Error, ValueError):
+        return {}
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 class _BoardSource:
     """Reads ONE board's kanban.db. Task ids are namespaced as
     ``slug \\x1f localid`` so several boards can be merged without collisions."""
@@ -1202,7 +1240,15 @@ class KanbanSource:
                 out.update(s.fetch_tasks(ids))
             except Exception:
                 continue
-        return out
+        # TaskList's overlay DB is authoritative. A list-like kanban column on
+        # some hosts is not TaskList membership and must not become a board
+        # grouping fallback when the TaskList plugin is unavailable.
+        memberships = tasklist_memberships(self.cfg)
+        return {
+            task_id: replace(task, list_name=memberships.get(
+                (_BoardSource.slug_of(task_id), _BoardSource.local_id(task_id)), ""))
+            for task_id, task in out.items()
+        }
 
     def fetch_comments(self, namespaced: str) -> list[dict]:
         s = self._for(namespaced)

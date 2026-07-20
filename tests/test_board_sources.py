@@ -38,6 +38,17 @@ def make_board(path: Path, task_id: str, ts: int) -> None:
             "INSERT INTO task_events VALUES (1, ?, 'completed', '{}', ?)",
             (task_id, ts),
         )
+def make_tasklist_db(path: Path, board: str, task_id: str, list_name: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as conn:
+        conn.executescript(
+            """
+            CREATE TABLE lists (id TEXT PRIMARY KEY, board TEXT, name TEXT);
+            CREATE TABLE membership (board TEXT, task_id TEXT, list_id TEXT);
+            """
+        )
+        conn.execute("INSERT INTO lists VALUES ('backend', ?, ?)", (board, list_name))
+        conn.execute("INSERT INTO membership VALUES (?, ?, 'backend')", (board, task_id))
 
 
 class BoardSourceTests(unittest.TestCase):
@@ -167,10 +178,26 @@ class BoardSourceTests(unittest.TestCase):
                 source.close()
             self.assertEqual(task.list_name, "Client delivery")
 
-    def test_report_chart_prefers_tasklist_list_identity_over_board(self):
+    def test_tasklist_overlay_membership_overrides_board_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "profile"
+            make_board(home / "kanban" / "boards" / "alpha" / "kanban.db", "ticket", 100)
+            make_tasklist_db(home / "tasklist" / "lists.db", "alpha", "ticket", "Backend")
+            source = api.KanbanSource(api.Config(hermes_home=home))
+            try:
+                task = source.fetch_tasks()["alpha::ticket"]
+            finally:
+                source.close()
+            self.assertEqual(task.list_name, "Backend")
+
+    def test_missing_tasklist_overlay_has_no_memberships(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(api.tasklist_memberships(api.Config(hermes_home=Path(tmp))), {})
+
+    def test_report_chart_uses_no_list_instead_of_board_fallback(self):
         bundle = (Path(__file__).parents[1] / "dashboard" / "dist" / "index.js").read_text()
-        self.assertIn('task.list || task.board || "Default list"', bundle)
-        self.assertIn('task.list || task.board || "—"', bundle)
+        self.assertIn('task.list || "No List"', bundle)
+        self.assertNotIn('task.list || task.board', bundle)
 
     def test_no_external_paths_preserves_profile_local_discovery(self):
         with tempfile.TemporaryDirectory() as tmp:
