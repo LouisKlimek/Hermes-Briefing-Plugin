@@ -303,6 +303,9 @@ _CANDIDATES: dict[str, list[str]] = {
     "task_body":    ["body", "description", "desc"],
     "task_created_by": ["created_by", "creator", "author", "by", "created_by_user"],
     "task_workspace": ["workspace", "workspace_path", "scratch", "repo", "worktree"],
+    # TaskList-compatible sources expose a list/folder independently from the
+    # Hermes board, so report charts can retain real list identity.
+    "task_list":    ["list_name", "list", "list_id", "folder_name", "folder_id"],
 
     "run_id":       ["id", "run_id"],
     "run_task":     ["task_id", "task"],
@@ -343,6 +346,7 @@ class Task:
     body: str = ""
     created_by: str = ""
     workspace: str = ""
+    list_name: str = ""
 
 
 # --------------------------------------------------------------------------- #
@@ -792,7 +796,7 @@ class _BoardSource:
             logical: self._pick(logical, tk, ov.get(logical))
             for logical in ("task_id", "task_title", "task_status", "task_assignee",
                             "task_tenant", "task_priority", "task_created", "task_body",
-                            "task_created_by", "task_workspace")
+                            "task_created_by", "task_workspace", "task_list")
         }
         if self._runs_table:
             rn = self._table_cols(self._runs_table)
@@ -893,6 +897,7 @@ class _BoardSource:
         cols.append(f'"{c["task_body"]}" AS _body' if c.get("task_body") else "'' AS _body")
         cols.append(f'"{c["task_created_by"]}" AS _cby' if c.get("task_created_by") else "'' AS _cby")
         cols.append(f'"{c["task_workspace"]}" AS _ws' if c.get("task_workspace") else "'' AS _ws")
+        cols.append(f'"{c["task_list"]}" AS _list' if c.get("task_list") else "'' AS _list")
         q = f'SELECT {", ".join(cols)} FROM {self._tasks_table}'
         rows = self._conn.execute(q).fetchall()
         out: dict[str, Task] = {}
@@ -905,7 +910,8 @@ class _BoardSource:
             out[_id] = Task(id=_id, title=r["_title"] or "", status=(r["_status"] or "").lower(),
                             assignee=r["_asg"] or "", tenant=r["_ten"] or "",
                             priority=r["_prio"], created=_to_epoch(r["_cr"]),
-                            body=r["_body"] or "", created_by=r["_cby"] or "", workspace=r["_ws"] or "")
+                            body=r["_body"] or "", created_by=r["_cby"] or "", workspace=r["_ws"] or "",
+                            list_name=r["_list"] or "")
         return out
 
     def fetch_runs(self, task_id: str) -> list[dict]:
@@ -2972,6 +2978,7 @@ def build_task_view(src: KanbanSource, start_ts: int | None = None,
             "priority": task.priority,
             "assignee": task.assignee,
             "board": _BoardSource.slug_of(task_id),
+            "list": task.list_name or None,
             "created_at": task.created or None,
             "completed_at": transition.ts if transition and bucket == "done" else None,
             "comment_count": len(src.fetch_comments(task_id)),

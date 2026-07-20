@@ -482,7 +482,9 @@
     var lists = {};
     (props.tasks || []).forEach(function (task) {
       var bucket = taskStatusBucket(task.status); if (!bucket) return;
-      var name = task.board || "Default list";
+      // A TaskList list is distinct from the Hermes board that stores it.
+      // Fall back only when this read-only source has no list identity.
+      var name = task.list || task.board || "Default list";
       if (!lists[name]) lists[name] = { name: name, done: 0, blocked: 0 };
       lists[name][bucket]++;
     });
@@ -520,7 +522,7 @@
     }); }
     var listOrder = [], listGroups = {};
     visible.forEach(function (task) {
-      var list = task.board || "Default list";
+      var list = task.list || task.board || "Default list";
       if (!listGroups[list]) { listGroups[list] = []; listOrder.push(list); }
       listGroups[list].push(task);
     });
@@ -535,7 +537,7 @@
         h("div", { className: "brf-task-status", "data-label": "Status" }, h(StatusBadge, { status: task.status, label: task.status || "Unknown" })),
         h("div", { className: "brf-task-priority", "data-label": "Priority" }, h("span", { className: "brf-task-dot", style: { background: priorityColor(task.priority) } }), task.priority == null || task.priority === "" ? "—" : String(task.priority)),
         h("div", { className: "brf-task-assignee", "data-label": "Assignee" }, task.assignee || "—"),
-        h("div", { className: "brf-task-board", "data-label": "List" }, task.board || "—"),
+        h("div", { className: "brf-task-board", "data-label": "List" }, task.list || task.board || "—"),
         h("div", { className: "brf-task-age", "data-label": "Created" }, task.created_at ? timeAgo(task.created_at) : "—"),
         h("div", { className: "brf-task-completed", "data-label": "Completed" }, task.completed_at ? taskDate(task.completed_at) : "—")),
         hasChildren && isOpen ? childRows.map(function (child) { return row(child, depth + 1); }) : []];
