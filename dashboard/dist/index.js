@@ -440,27 +440,6 @@
           transition: "width .6s cubic-bezier(.4,0,.2,1)" } })));
   }
 
-  // Readable Done view: cards in a responsive grid, grouped by board when more
-  // than one board is present. Long "why" text is clamped to keep cards even.
-  function DoneGrid(props) {
-    var items = props.items || [];
-    var groups = {}, order = [];
-    items.forEach(function (it) { var b = boardOf(it.task_id) || "\u2014"; if (!groups[b]) { groups[b] = []; order.push(b); } groups[b].push(it); });
-    var multi = order.length > 1;
-    return h("div", null, order.map(function (b) {
-      return h("div", { key: b, style: { marginBottom: "0.9rem" } },
-        multi ? h("div", { style: { fontSize: "0.7rem", textTransform: "uppercase", letterSpacing: "0.06em", color: MUTED, margin: "0.1rem 0 0.45rem", fontWeight: 600 } }, b + " \u00b7 " + groups[b].length) : null,
-        h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: "0.55rem" } },
-          groups[b].map(function (it, i) {
-            var why = (it.bullets && it.bullets[0]) || it.why || "";
-            var t = ticketHref(it.task_id, props.target);
-            return h("div", { key: i, className: "brf-card", style: { display: "flex", flexDirection: "column", border: "1px solid var(--color-border)", borderLeft: "3px solid " + resolveColor(it.status, "done"), borderRadius: "0.55rem", padding: "0.6rem 0.75rem", background: "var(--color-card)" } },
-              h("div", { style: { fontSize: "0.86rem", fontWeight: 600, lineHeight: 1.35, marginBottom: why ? "0.35rem" : "0.4rem" } }, it.title),
-              why ? h("div", { style: { fontSize: "0.78rem", color: MUTED, lineHeight: 1.5, marginBottom: "0.5rem", display: "-webkit-box", WebkitLineClamp: 3, WebkitBoxOrient: "vertical", overflow: "hidden" } }, why) : null,
-              it.task_id ? h("a", { href: t.url, style: { marginTop: "auto", alignSelf: "flex-start", fontSize: "0.74rem", fontWeight: 600, textDecoration: "none", color: "inherit", border: "1px solid var(--color-border)", borderRadius: "0.4rem", padding: "0.1rem 0.5rem" } }, "Open ticket \u2192") : null);
-          })));
-    }));
-  }
 
   function priorityColor(priority) {
     var value = String(priority == null ? "" : priority).toLowerCase();
@@ -599,9 +578,6 @@
 
       Separator ? h(Separator, { style: { margin: "0.5rem 0" } }) : null,
 
-      (digest.done && digest.done.length)
-        ? h(Section, { title: "Done (" + digest.done.length + ")" }, h(DoneGrid, { items: digest.done, target: props.target }))
-        : null,
       (digest.in_progress && digest.in_progress.length)
         ? h(Section, { title: "Active (" + digest.in_progress.length + ")" },
             h("div", { style: { display: "flex", flexWrap: "wrap", gap: "0.35rem" } },

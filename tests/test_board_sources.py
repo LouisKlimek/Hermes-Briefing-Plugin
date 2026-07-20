@@ -48,6 +48,13 @@ class BoardSourceTests(unittest.TestCase):
         self.assertIn('"List: " + list', bundle)
         self.assertNotIn('label: "Tasks"', bundle)
 
+    def test_daily_report_omits_done_accordion_and_done_task_cards(self):
+        bundle = (Path(__file__).parents[1] / "dashboard" / "dist" / "index.js").read_text()
+        self.assertNotIn("function DoneGrid", bundle)
+        self.assertNotIn('title: "Done (" + digest.done.length', bundle)
+        self.assertIn('title: "Active (" + digest.in_progress.length', bundle)
+        self.assertIn('title: "Tasks (" + ((props.tasks || []).length)', bundle)
+
     def test_task_view_uses_real_task_fields_and_derives_comments_children_and_completion(self):
         parent = api.Task("alpha::parent", "Parent", "done", "lead", "", "high", 100)
         child = api.Task("alpha::child", "Child", "blocked", "worker", "", "normal", 200)
