@@ -3,6 +3,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 
@@ -303,6 +304,9 @@ class BoardSourceTests(unittest.TestCase):
                 saved = store.set_budget_limits(20.5, "500")
                 self.assertEqual(saved["daily_eur"], 20.5)
                 self.assertEqual(saved["monthly_eur"], 500.0)
+                saved = store.set_budget_limits(20.5, 600)
+                self.assertEqual(saved["daily_eur"], 20.5)
+                self.assertEqual(saved["monthly_eur"], 600.0)
                 for daily, monthly in ((-1, 1), ("bad", 1), (1, float("inf")), (True, 1)):
                     with self.assertRaises(ValueError):
                         store.set_budget_limits(daily, monthly)
@@ -311,13 +315,44 @@ class BoardSourceTests(unittest.TestCase):
             reopened = api.Store(cfg)
             try:
                 self.assertEqual(reopened.get_budget_limits()["daily_eur"], 20.5)
-                self.assertEqual(reopened.get_budget_limits()["monthly_eur"], 500.0)
+                self.assertEqual(reopened.get_budget_limits()["monthly_eur"], 600.0)
             finally:
                 reopened.close()
 
+    def test_budget_limits_endpoint_preserves_omitted_limit(self):
+        if api.router is None:
+            self.skipTest("FastAPI is unavailable in the test environment")
+
+        class FakeStore:
+            limits = {"daily_eur": 15.0, "monthly_eur": 400.0}
+
+            def __init__(self, cfg):
+                pass
+
+            def get_budget_limits(self):
+                return dict(self.limits)
+
+            def set_budget_limits(self, daily, monthly):
+                self.limits = {"daily_eur": daily, "monthly_eur": monthly}
+                type(self).limits = self.limits
+                return dict(self.limits)
+
+            def close(self):
+                pass
+
+        endpoint = next(route.endpoint for route in api.router.routes if route.path == "/budget-limits" and "POST" in route.methods)
+        with patch.object(api, "Store", FakeStore), patch.object(api, "load_config", return_value=object()):
+            daily = endpoint({"daily_eur": 20})
+            monthly = endpoint({"monthly_eur": 500})
+        self.assertEqual(daily, {"daily_eur": 20, "monthly_eur": 400.0})
+        self.assertEqual(monthly, {"daily_eur": 20, "monthly_eur": 500})
+
     def test_budget_editor_is_accessible_and_does_not_direct_users_to_config(self):
         bundle = (Path(__file__).parents[1] / "dashboard" / "dist" / "index.js").read_text()
-        self.assertIn('aria-label": "Edit daily and monthly budget limits"', bundle)
+        self.assertIn('aria-label": "Edit " + props.label.toLowerCase()', bundle)
+        self.assertIn('field: "daily_eur"', bundle)
+        self.assertIn('field: "monthly_eur"', bundle)
+        self.assertNotIn("BudgetEditor", bundle)
         self.assertIn('role: "alert"', bundle)
         self.assertIn('"/budget-limits"', bundle)
         self.assertNotIn("Edit limits in config.yaml", bundle)

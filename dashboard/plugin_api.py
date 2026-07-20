@@ -3219,7 +3219,11 @@ if router is not None:
         body = body or {}
         store = Store(load_config())
         try:
-            return store.set_budget_limits(body.get("daily_eur"), body.get("monthly_eur"))
+            current = store.get_budget_limits()
+            return store.set_budget_limits(
+                body["daily_eur"] if "daily_eur" in body else current["daily_eur"],
+                body["monthly_eur"] if "monthly_eur" in body else current["monthly_eur"],
+            )
         except ValueError as exc:
             raise HTTPException(422, str(exc))
         finally:
