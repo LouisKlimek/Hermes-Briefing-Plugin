@@ -373,7 +373,6 @@
 
   function Overview(props) {
     var ov = props.overview || {};
-    var ti = ov.team_input || {};
     return h("div", { style: { marginBottom: "0.85rem" } },
       (ov.board_lights && ov.board_lights.length) ? h("div", { style: { display: "flex", flexWrap: "wrap", gap: "0.4rem", marginBottom: "0.6rem" } },
         ov.board_lights.map(function (b, i) {
@@ -381,9 +380,7 @@
           return h("span", { key: i, style: { display: "inline-flex", alignItems: "center", gap: "0.35rem", fontSize: "0.76rem", padding: "0.16rem 0.55rem", borderRadius: "999px", border: "1px solid var(--color-border)", background: "var(--color-card)" } },
             h("span", { style: { width: "8px", height: "8px", borderRadius: "999px", background: c, boxShadow: "0 0 6px " + c + "88" } }),
             b.board, h("span", { style: { color: MUTED } }, lightWord(b.light)));
-        })) : null,
-      h("div", { style: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: "0.9rem" } },
-        (ti.new || ti.unrouted) ? h("span", { style: { fontSize: "0.78rem", color: MUTED } }, "Team: " + (ti.new || 0) + " new" + (ti.unrouted ? " · " + ti.unrouted + " unrouted" : "")) : null));
+        })) : null);
   }
 
   function fmtDur(s) { if (s == null) return "\u2014"; return s >= 60 ? (s / 60).toFixed(1) + " min" : Math.round(s) + " s"; }
