@@ -78,6 +78,15 @@ class BoardSourceTests(unittest.TestCase):
         self.assertIn('title: "Models · " + (digest.models.by_profile.length) + " profiles", defaultCollapsed: true', daily)
         self.assertIn('title: "System", defaultCollapsed: true', daily)
 
+    def test_weekly_and_monthly_low_priority_sections_start_collapsed_with_tasks_label(self):
+        bundle = (Path(__file__).parents[1] / "dashboard" / "dist" / "index.js").read_text()
+        range_view = bundle[bundle.index("function RangeView"):bundle.index("function StatusBar")]
+        self.assertIn('title: "Still open (" + r.hand.length + ")", defaultCollapsed: true', range_view)
+        self.assertIn('title: "Tasks (" + ((props.tasks || []).length) + ")", defaultCollapsed: true', range_view)
+        self.assertIn('title: "Models \\u00b7 " + (r.models.by_profile.length) + " profiles", defaultCollapsed: true', range_view)
+        self.assertIn('title: "System", defaultCollapsed: true', range_view)
+        self.assertNotIn('Task transitions', range_view)
+
     def test_task_view_uses_real_task_fields_and_derives_comments_children_and_completion(self):
         parent = api.Task("alpha::parent", "Parent", "done", "lead", "", "high", 100)
         child = api.Task("alpha::child", "Child", "blocked", "worker", "", "normal", 200)
