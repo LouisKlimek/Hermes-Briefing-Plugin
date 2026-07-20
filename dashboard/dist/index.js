@@ -627,19 +627,19 @@
                 var ach = colorChrome(resolveColor(t.status, "active"));
                 return h("a", { key: i, href: th.url, style: Object.assign({ fontSize: "0.78rem", textDecoration: "none", padding: "0.15rem 0.5rem", borderRadius: "999px" }, ach) }, t.title); })))
         : null,
-      h(Section, { title: "Tasks (" + ((props.tasks || []).length) + ")" }, h(TaskListView, { tasks: props.tasks, loading: props.tasksLoading, target: props.target })),
+      h(Section, { title: "Tasks (" + ((props.tasks || []).length) + ")", defaultCollapsed: true }, h(TaskListView, { tasks: props.tasks, loading: props.tasksLoading, target: props.target })),
       (digest.learned && digest.learned.length)
         ? h(Section, { title: "Insights (" + digest.learned.length + ")" }, h(LearnedCards, { items: digest.learned, target: props.target }))
-        : null,
-      (digest.models && digest.models.total_runs)
-        ? h(Section, { title: "Models · " + (digest.models.by_profile.length) + " profiles" }, h(ModelsTable, { models: digest.models }))
         : null,
       h(Section, { title: "Cost" },
         h(BudgetBar, { label: "Today", editable: true, field: "daily_eur", used: cost.today_eur, budget: cost.budget_daily, apiBase: props.apiBase, onSaved: props.onBudgetSaved }),
         h(BudgetBar, { label: "This month", editable: true, field: "monthly_eur", used: cost.month_eur, budget: cost.budget_monthly, apiBase: props.apiBase, onSaved: props.onBudgetSaved }),
         h("div", { style: { fontSize: "0.76rem", color: MUTED } }, (cost.runs || 0) + " runs"),
         cost.caveat ? h("div", { style: { fontSize: "0.74rem", color: MUTED, marginTop: "0.2rem" } }, "⚠ " + cost.caveat) : null),
-      h(Section, { title: "System" }, h("div", null,
+      (digest.models && digest.models.total_runs)
+        ? h(Section, { title: "Models · " + (digest.models.by_profile.length) + " profiles", defaultCollapsed: true }, h(ModelsTable, { models: digest.models }))
+        : null,
+      h(Section, { title: "System", defaultCollapsed: true }, h("div", null,
         (sys.notes && sys.notes.length) ? h("div", { style: { fontSize: "0.8rem", color: "#d14a4a", marginBottom: "0.5rem", fontWeight: 600 } }, sys.notes.join(", ")) : null,
         h(InsightsBlock, { insights: sys.insights, stable: sys.stable }))));
   }
