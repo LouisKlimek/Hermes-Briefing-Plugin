@@ -464,9 +464,9 @@
     }
     return open
       ? h("div", { style: { display: "flex", alignItems: "center", gap: "0.3rem" } },
-          h("input", { type: "number", min: "0", step: "any", value: value, onChange: function (e) { setValue(e.target.value); }, "aria-label": props.label + " in EUR", style: { width: "5.5rem" } }),
-          h("button", { type: "button", onClick: save, disabled: saving }, saving ? "Saving…" : "Save"),
-          h("button", { type: "button", onClick: close, disabled: saving, "aria-label": "Cancel editing " + props.label.toLowerCase() }, "Cancel"),
+          h("input", { className: "brf-budget-limit-input", type: "number", min: "0", step: "any", value: value, onChange: function (e) { setValue(e.target.value); }, "aria-label": props.label + " in EUR", style: { width: "5.5rem" } }),
+          h("button", { className: "brf-budget-limit-save", type: "button", onClick: save, disabled: saving }, saving ? "Saving…" : "Save"),
+          h("button", { className: "brf-budget-limit-cancel", type: "button", onClick: close, disabled: saving, "aria-label": "Cancel editing " + props.label.toLowerCase() }, "Cancel"),
           error ? h("span", { role: "alert", style: { color: "#d14a4a", fontSize: "0.76rem" } }, error) : null)
       : h("div", { style: { display: "flex", alignItems: "baseline", gap: "0.3rem" } },
           h("span", { style: { fontSize: "0.78rem" } }, eur(props.used) + " / $" + (Number(props.value) || 0).toFixed(0)),

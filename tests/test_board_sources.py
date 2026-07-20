@@ -359,6 +359,7 @@ class BoardSourceTests(unittest.TestCase):
 
     def test_budget_editor_is_accessible_and_does_not_direct_users_to_config(self):
         bundle = (Path(__file__).parents[1] / "dashboard" / "dist" / "index.js").read_text()
+        stylesheet = (Path(__file__).parents[1] / "dashboard" / "dist" / "style.css").read_text()
         self.assertIn('aria-label": "Edit " + props.label.toLowerCase()', bundle)
         self.assertIn('field: "daily_eur"', bundle)
         self.assertIn('field: "monthly_eur"', bundle)
@@ -366,6 +367,13 @@ class BoardSourceTests(unittest.TestCase):
         self.assertIn('role: "alert"', bundle)
         self.assertIn('"/budget-limits"', bundle)
         self.assertNotIn("Edit limits in config.yaml", bundle)
+        self.assertIn('className: "brf-budget-limit-input"', bundle)
+        self.assertIn('className: "brf-budget-limit-save"', bundle)
+        self.assertIn('className: "brf-budget-limit-cancel"', bundle)
+        self.assertIn('.brf-budget-limit-input::-webkit-inner-spin-button', stylesheet)
+        self.assertIn('-moz-appearance: textfield;', stylesheet)
+        self.assertIn('background: #635bff;', stylesheet)
+        self.assertIn('.brf-budget-limit-cancel {', stylesheet)
 
 
 if __name__ == "__main__":
