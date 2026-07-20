@@ -86,6 +86,16 @@ class BoardSourceTests(unittest.TestCase):
         self.assertEqual(rows[child.id]["status"], "blocked")
         self.assertIsNone(rows[child.id]["completed_at"])
 
+    def test_task_table_uses_tasklist_column_order_and_presentational_bindings(self):
+        bundle = (Path(__file__).parents[1] / "dashboard" / "dist" / "index.js").read_text()
+        stylesheet = (Path(__file__).parents[1] / "dashboard" / "dist" / "style.css").read_text()
+        self.assertIn('["Name", "Status", "Priority", "Assignee", "List", "Age"]', bundle)
+        self.assertNotIn('["Name", "Status", "Priority", "Assignee", "List", "Created", "Completed"]', bundle)
+        self.assertIn('priorityLabel(task.priority)', bundle)
+        self.assertIn('"↳ " + childCount', bundle)
+        self.assertIn('resolveColor(task.status)', bundle)
+        self.assertIn('grid-template-columns: minmax(14rem, 2.6fr)', stylesheet)
+
     def test_task_view_reads_comments_links_and_completion_from_board_source(self):
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp) / "profile"

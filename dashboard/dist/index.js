@@ -447,6 +447,13 @@
     if (value === "normal" || value === "medium" || Number(priority) === 2) return "#f59e0b";
     return "#6b7280";
   }
+  function priorityLabel(priority) {
+    if (priority == null || priority === "") return "No priority";
+    var value = String(priority).toLowerCase();
+    if (value === "urgent" || value === "high" || Number(priority) >= 3) return "High";
+    if (value === "normal" || value === "medium" || Number(priority) === 2) return "Normal";
+    return "Low";
+  }
   function taskDate(ts) {
     if (!ts) return "—";
     try { return new Date(ts * 1000).toLocaleDateString(); } catch (e) { return "—"; }
@@ -507,18 +514,20 @@
     });
     function row(task, depth) {
       var childRows = sorted(children[task.id] || []), hasChildren = childRows.length > 0;
+      var childCount = Array.isArray(task.child_ids) ? task.child_ids.length : childRows.length;
       var isOpen = !!childrenOpen[task.id], target = ticketHref(task.id, props.target);
       return [h("div", { className: "brf-task-row", key: task.id, style: { "--task-depth": depth } },
         h("div", { className: "brf-task-title", "data-label": "Name" },
           hasChildren ? h("button", { className: "brf-task-disclosure", onClick: function () { setChildrenOpen(function (old) { var next = Object.assign({}, old); next[task.id] = !next[task.id]; return next; }); }, "aria-label": (isOpen ? "Collapse" : "Expand") + " child tasks" }, isOpen ? "⌄" : "›") : h("span", { className: "brf-task-disclosure brf-task-disclosure-empty" }, ""),
+          h("span", { className: "brf-task-dot", title: priorityLabel(task.priority) + " priority", style: { background: priorityColor(task.priority) } }),
           h("a", { href: target.url, className: "brf-task-link" }, task.title || task.id),
+          childCount ? h("span", { className: "brf-task-subtasks", title: childCount + " subtasks" }, "↳ " + childCount) : null,
           h("span", { className: "brf-task-comments", title: (task.comment_count || 0) + " comments" }, "💬 " + (task.comment_count || 0))),
-        h("div", { className: "brf-task-status", "data-label": "Status" }, h(StatusBadge, { status: task.status, label: task.status || "Unknown" })),
-        h("div", { className: "brf-task-priority", "data-label": "Priority" }, h("span", { className: "brf-task-dot", style: { background: priorityColor(task.priority) } }), task.priority == null || task.priority === "" ? "—" : String(task.priority)),
+        h("div", { className: "brf-task-status", "data-label": "Status" }, h("span", { className: "brf-task-dot", style: { background: resolveColor(task.status) } }), h("span", null, task.status || "Unknown")),
+        h("div", { className: "brf-task-priority", "data-label": "Priority" }, priorityLabel(task.priority)),
         h("div", { className: "brf-task-assignee", "data-label": "Assignee" }, task.assignee || "—"),
         h("div", { className: "brf-task-board", "data-label": "List" }, task.list || "No List"),
-        h("div", { className: "brf-task-age", "data-label": "Created" }, task.created_at ? timeAgo(task.created_at) : "—"),
-        h("div", { className: "brf-task-completed", "data-label": "Completed" }, task.completed_at ? taskDate(task.completed_at) : "—")),
+        h("div", { className: "brf-task-age", "data-label": "Age" }, task.created_at ? timeAgo(task.created_at) : "—")),
         hasChildren && isOpen ? childRows.map(function (child) { return row(child, depth + 1); }) : []];
     }
     if (props.loading) return h(Skeleton);
@@ -547,7 +556,7 @@
               h("button", { className: "brf-task-group-header", onClick: function () { setGroupsOpen(function (old) { var next = Object.assign({}, old); next[statusKey] = !isOpen; return next; }); }, "aria-expanded": isOpen },
                 h("span", { className: "brf-task-chevron" }, isOpen ? "⌄" : "›"), h("span", { className: "brf-task-dot", style: { background: resolveColor(status) } }), h("strong", null, status), h("span", null, rows.length)),
               isOpen ? h("div", { className: "brf-task-table" },
-                h("div", { className: "brf-task-head" }, ["Name", "Status", "Priority", "Assignee", "List", "Created", "Completed"].map(function (label) { return h("span", { key: label }, label); })),
+                h("div", { className: "brf-task-head" }, ["Name", "Status", "Priority", "Assignee", "List", "Age"].map(function (label) { return h("span", { key: label }, label); })),
                 sorted(rows).map(function (task) { return row(task, 0); })) : null);
           }) : null);
       }));
