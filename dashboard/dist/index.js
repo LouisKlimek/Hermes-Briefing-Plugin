@@ -658,7 +658,7 @@
       (r.days && r.days.length) ? h("div", { style: { display: "flex", gap: "1.5rem", flexWrap: "wrap" } },
         h("div", { style: { flex: "1 1 220px" } }, h(Section, { title: "Done per day" }, h(MiniBars, { rows: r.days, field: "done" }))),
         h("div", { style: { flex: "1 1 220px" } }, h(Section, { title: "Daily cost" }, h(MiniBars, { rows: r.days, field: "cost" })))) : null,
-      (r.hand && r.hand.length) ? h(Section, { title: "Still open (" + r.hand.length + ")" },
+      (r.hand && r.hand.length) ? h(Section, { title: "Still open (" + r.hand.length + ")", defaultCollapsed: true },
         h("div", { style: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: "0.5rem" } },
           r.hand.map(function (d, i) {
             var t = ticketHref(d.task_id, props.target);
@@ -666,9 +666,9 @@
               h("div", { style: { fontSize: "0.85rem", fontWeight: 600, lineHeight: 1.35 } }, d.title),
               d.detail ? h("div", { style: { fontSize: "0.76rem", color: MUTED, lineHeight: 1.5, marginTop: "0.25rem", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" } }, d.detail) : null,
               h("a", { href: t.url, style: { display: "inline-block", marginTop: "0.4rem", fontSize: "0.76rem", fontWeight: 600, textDecoration: "none", color: "inherit", border: "1px solid var(--color-border)", borderRadius: "0.4rem", padding: "0.12rem 0.5rem" } }, "Open ticket \u2192")); }))) : null,
-      h(Section, { title: "Task transitions (" + ((props.tasks || []).length) + ")" }, h(TaskListView, { tasks: props.tasks, loading: props.tasksLoading, target: props.target })),
-      (r.models && r.models.total_runs) ? h(Section, { title: "Models \u00b7 " + (r.models.by_profile.length) + " profiles" }, h(ModelsTable, { models: r.models })) : null,
-      (r.system && r.system.insights && r.system.insights.available) ? h(Section, { title: "System" }, h(InsightsBlock, { insights: r.system.insights, stable: true })) : null,
+      h(Section, { title: "Tasks (" + ((props.tasks || []).length) + ")", defaultCollapsed: true }, h(TaskListView, { tasks: props.tasks, loading: props.tasksLoading, target: props.target })),
+      (r.models && r.models.total_runs) ? h(Section, { title: "Models \u00b7 " + (r.models.by_profile.length) + " profiles", defaultCollapsed: true }, h(ModelsTable, { models: r.models })) : null,
+      (r.system && r.system.insights && r.system.insights.available) ? h(Section, { title: "System", defaultCollapsed: true }, h(InsightsBlock, { insights: r.system.insights, stable: true })) : null,
       (r.learned && r.learned.length) ? h(Section, { title: "Insights (" + r.learned.length + ")" }, h(LearnedCards, { items: r.learned, target: props.target })) : null);
     function stat(label, val) {
       return h("div", null,
