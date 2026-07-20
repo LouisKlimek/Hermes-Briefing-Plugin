@@ -60,11 +60,12 @@ class BoardSourceTests(unittest.TestCase):
         self.assertIn('"List: " + list', bundle)
         self.assertNotIn('label: "Tasks"', bundle)
 
-    def test_daily_report_omits_done_accordion_and_done_task_cards(self):
+    def test_daily_report_omits_done_and_active_accordions(self):
         bundle = (Path(__file__).parents[1] / "dashboard" / "dist" / "index.js").read_text()
         self.assertNotIn("function DoneGrid", bundle)
         self.assertNotIn('title: "Done (" + digest.done.length', bundle)
-        self.assertIn('title: "Active (" + digest.in_progress.length', bundle)
+        self.assertNotIn('title: "Active (" + digest.in_progress.length', bundle)
+        self.assertNotIn('digest.in_progress.map(function (t, i)', bundle)
         self.assertIn('title: "Tasks (" + ((props.tasks || []).length)', bundle)
 
     def test_daily_models_follow_cost_and_low_priority_sections_start_collapsed(self):

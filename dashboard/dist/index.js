@@ -616,14 +616,6 @@
 
       Separator ? h(Separator, { style: { margin: "0.5rem 0" } }) : null,
 
-      (digest.in_progress && digest.in_progress.length)
-        ? h(Section, { title: "Active (" + digest.in_progress.length + ")" },
-            h("div", { style: { display: "flex", flexWrap: "wrap", gap: "0.35rem" } },
-              digest.in_progress.map(function (t, i) {
-                var th = ticketHref(t.task_id, props.target);
-                var ach = colorChrome(resolveColor(t.status, "active"));
-                return h("a", { key: i, href: th.url, style: Object.assign({ fontSize: "0.78rem", textDecoration: "none", padding: "0.15rem 0.5rem", borderRadius: "999px" }, ach) }, t.title); })))
-        : null,
       h(Section, { title: "Tasks (" + ((props.tasks || []).length) + ")", defaultCollapsed: true }, h(TaskListView, { tasks: props.tasks, loading: props.tasksLoading, target: props.target })),
       (digest.learned && digest.learned.length)
         ? h(Section, { title: "Insights (" + digest.learned.length + ")" }, h(LearnedCards, { items: digest.learned, target: props.target }))
