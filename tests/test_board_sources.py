@@ -281,6 +281,47 @@ class BoardSourceTests(unittest.TestCase):
         self.assertEqual(cfg.external_board_roots, [Path("/boards-a"), Path("/boards-b")])
         self.assertEqual(cfg.external_board_dbs, [Path("/allowed/custom/kanban.db")])
 
+    def test_budget_limits_default_to_fixed_database_values_and_ignore_legacy_config(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "profile"
+            cfg = api.Config(hermes_home=home)
+            api._apply_yaml(cfg, {"budget": {"daily_eur": 1, "monthly_eur": 2}})
+            store = api.Store(cfg)
+            try:
+                self.assertEqual(store.get_budget_limits()["daily_eur"], 15.0)
+                self.assertEqual(store.get_budget_limits()["monthly_eur"], 400.0)
+            finally:
+                store.close()
+
+    def test_budget_limits_persist_and_reject_invalid_values(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = api.Config(hermes_home=Path(tmp) / "profile")
+            store = api.Store(cfg)
+            try:
+                self.assertEqual(store.get_budget_limits()["daily_eur"], 15.0)
+                self.assertEqual(store.get_budget_limits()["monthly_eur"], 400.0)
+                saved = store.set_budget_limits(20.5, "500")
+                self.assertEqual(saved["daily_eur"], 20.5)
+                self.assertEqual(saved["monthly_eur"], 500.0)
+                for daily, monthly in ((-1, 1), ("bad", 1), (1, float("inf")), (True, 1)):
+                    with self.assertRaises(ValueError):
+                        store.set_budget_limits(daily, monthly)
+            finally:
+                store.close()
+            reopened = api.Store(cfg)
+            try:
+                self.assertEqual(reopened.get_budget_limits()["daily_eur"], 20.5)
+                self.assertEqual(reopened.get_budget_limits()["monthly_eur"], 500.0)
+            finally:
+                reopened.close()
+
+    def test_budget_editor_is_accessible_and_does_not_direct_users_to_config(self):
+        bundle = (Path(__file__).parents[1] / "dashboard" / "dist" / "index.js").read_text()
+        self.assertIn('aria-label": "Edit daily and monthly budget limits"', bundle)
+        self.assertIn('role: "alert"', bundle)
+        self.assertIn('"/budget-limits"', bundle)
+        self.assertNotIn("Edit limits in config.yaml", bundle)
+
 
 if __name__ == "__main__":
     unittest.main()

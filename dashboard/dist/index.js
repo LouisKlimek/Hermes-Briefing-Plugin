@@ -441,6 +441,36 @@
   }
 
 
+  function BudgetEditor(props) {
+    var sOpen = useState(false), open = sOpen[0], setOpen = sOpen[1];
+    var sDaily = useState(String(props.daily == null ? "" : props.daily)), daily = sDaily[0], setDaily = sDaily[1];
+    var sMonthly = useState(String(props.monthly == null ? "" : props.monthly)), monthly = sMonthly[0], setMonthly = sMonthly[1];
+    var sError = useState(""), error = sError[0], setError = sError[1];
+    var sSaving = useState(false), saving = sSaving[0], setSaving = sSaving[1];
+    useEffect(function () { if (!open) { setDaily(String(props.daily == null ? "" : props.daily)); setMonthly(String(props.monthly == null ? "" : props.monthly)); } }, [props.daily, props.monthly, open]);
+    function close() { if (!saving) { setOpen(false); setError(""); } }
+    function save() {
+      var d = Number(daily), m = Number(monthly);
+      if (!daily.trim() || !monthly.trim() || !Number.isFinite(d) || !Number.isFinite(m) || d < 0 || m < 0) {
+        setError("Enter non-negative numeric daily and monthly EUR limits."); return;
+      }
+      setSaving(true); setError("");
+      fetch(props.apiBase + "/budget-limits", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ daily_eur: d, monthly_eur: m }) })
+        .then(function (r) { return r.json().catch(function () { return {}; }).then(function (body) { if (!r.ok) throw new Error(body.detail || "Could not save budget limits."); return body; }); })
+        .then(function (limits) { setOpen(false); props.onSaved(limits); })
+        .catch(function (err) { setError(err && err.message ? err.message : "Could not save budget limits."); })
+        .then(function () { setSaving(false); });
+    }
+    return h("div", { style: { marginTop: "0.35rem" } },
+      h("button", { type: "button", onClick: function () { setOpen(true); }, title: "Edit daily and monthly budget limits", "aria-label": "Edit daily and monthly budget limits", style: { border: "1px solid var(--color-border)", borderRadius: "0.35rem", background: "var(--color-card)", color: "inherit", cursor: "pointer", padding: "0.18rem 0.45rem", fontSize: "0.82rem" } }, "✎"),
+      open ? h("div", { role: "dialog", "aria-label": "Edit budget limits", style: { marginTop: "0.45rem", padding: "0.6rem", border: "1px solid var(--color-border)", borderRadius: "0.45rem", background: "var(--color-card)" } },
+        h("div", { style: { fontSize: "0.8rem", fontWeight: 600, marginBottom: "0.4rem" } }, "Budget limits (EUR)"),
+        h("label", { style: { display: "block", fontSize: "0.76rem", marginBottom: "0.35rem" } }, "Daily limit", h("input", { type: "number", min: "0", step: "any", value: daily, onChange: function (e) { setDaily(e.target.value); }, "aria-label": "Daily budget limit in EUR", style: { display: "block", width: "100%", marginTop: "0.15rem" } })),
+        h("label", { style: { display: "block", fontSize: "0.76rem", marginBottom: "0.45rem" } }, "Monthly limit", h("input", { type: "number", min: "0", step: "any", value: monthly, onChange: function (e) { setMonthly(e.target.value); }, "aria-label": "Monthly budget limit in EUR", style: { display: "block", width: "100%", marginTop: "0.15rem" } })),
+        error ? h("div", { role: "alert", style: { color: "#d14a4a", fontSize: "0.76rem", marginBottom: "0.4rem" } }, error) : null,
+        h("div", { style: { display: "flex", gap: "0.4rem" } }, h("button", { type: "button", onClick: save, disabled: saving }, saving ? "Saving…" : "Save"), h("button", { type: "button", onClick: close, disabled: saving }, "Cancel"))) : null);
+  }
+
   function priorityColor(priority) {
     var value = String(priority == null ? "" : priority).toLowerCase();
     if (value === "urgent" || value === "high" || Number(priority) >= 3) return "#ef4444";
@@ -606,8 +636,8 @@
         h(BudgetBar, { label: "Today", used: cost.today_eur, budget: cost.budget_daily }),
         h(BudgetBar, { label: "This month", used: cost.month_eur, budget: cost.budget_monthly }),
         h("div", { style: { fontSize: "0.76rem", color: MUTED } }, (cost.runs || 0) + " runs"),
-        h("a", { href: "https://github.com/LouisKlimek/Hermes-Briefing-Plugin#configuration", target: "_blank", rel: "noopener noreferrer", title: "Edit ~/.hermes/briefing/config.yaml: budget.daily_eur and budget.monthly_eur", "aria-label": "Edit budget limits in ~/.hermes/briefing/config.yaml: budget.daily_eur and budget.monthly_eur", style: { display: "inline-block", marginTop: "0.3rem", fontSize: "0.72rem", color: MUTED } }, "Edit limits in config.yaml \u2197"),
-        cost.caveat ? h("div", { style: { fontSize: "0.74rem", color: MUTED, marginTop: "0.2rem" } }, "\u26a0 " + cost.caveat) : null),
+        h(BudgetEditor, { apiBase: props.apiBase, daily: cost.budget_daily, monthly: cost.budget_monthly, onSaved: props.onBudgetSaved }),
+        cost.caveat ? h("div", { style: { fontSize: "0.74rem", color: MUTED, marginTop: "0.2rem" } }, "⚠ " + cost.caveat) : null),
       h(Section, { title: "System" }, h("div", null,
         (sys.notes && sys.notes.length) ? h("div", { style: { fontSize: "0.8rem", color: "#d14a4a", marginBottom: "0.5rem", fontWeight: 600 } }, sys.notes.join(", ")) : null,
         h(InsightsBlock, { insights: sys.insights, stable: sys.stable }))));
@@ -863,6 +893,10 @@
         .catch(function () {}).then(function () { setDayLoading(false); });
     }
 
+    function budgetSaved() {
+      rebuild();
+    }
+
     function resolve(id, resolution) {
       setBusyId(id);
       fetchJSON(apiRef.current + "/decisions/" + id + "/resolve?resolution=" + resolution)
@@ -895,7 +929,7 @@
     if (dayLoading && !digest) dayBody = h("div", { className: "brf-day-body" }, h(Skeleton));
     else if (!digest) dayBody = h("div", { className: "brf-day-body brf-day-empty" }, "No briefing.");
     else dayBody = h("div", { className: "brf-day-body" },
-      h(DigestView, { digest: digest, building: dayLoading || building, onRebuild: rebuild, target: ticketBase, tasks: tasks, tasksLoading: tasksLoading }));
+      h(DigestView, { digest: digest, building: dayLoading || building, onRebuild: rebuild, onBudgetSaved: budgetSaved, apiBase: apiBase, target: ticketBase, tasks: tasks, tasksLoading: tasksLoading }));
 
     var content;
     if (tab === "day") {
