@@ -68,6 +68,40 @@
 .brf-day-body button { max-width: 100%; white-space: normal; }
 .brf-day-empty { padding-left: 1rem; color: var(--color-muted-foreground, #888); font-size: .85rem; }
 
+/* Budget limit editing follows the Tasklist action treatment without changing behavior. */
+.brf-budget-limit-input {
+  appearance: textfield;
+  -moz-appearance: textfield;
+  box-sizing: border-box;
+  border: 1px solid #4b5563;
+  border-radius: .5rem;
+  background: #000;
+  color: #f9fafb;
+  padding: .35rem .5rem;
+}
+.brf-budget-limit-input::-webkit-inner-spin-button,
+.brf-budget-limit-input::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+.brf-budget-limit-save,
+.brf-budget-limit-cancel {
+  border-radius: .5rem;
+  padding: .35rem .6rem;
+  color: #f9fafb;
+  cursor: pointer;
+}
+.brf-budget-limit-save {
+  border: 1px solid #635bff;
+  background: #635bff;
+}
+.brf-budget-limit-cancel {
+  border: 1px solid #6b7280;
+  background: #000;
+}
+.brf-budget-limit-save:disabled,
+.brf-budget-limit-cancel:disabled { cursor: not-allowed; opacity: .65; }
+
 /* Grouped task table: dense desktop grid, labelled stacked rows on narrow screens. */
 .brf-task-view { min-width: 0; }
 .brf-task-list { border: 1px solid var(--color-border); border-radius: .55rem; overflow: hidden; margin-bottom: .55rem; background: var(--color-card); }
