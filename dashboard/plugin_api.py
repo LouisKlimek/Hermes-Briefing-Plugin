@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import sys
 import json
+import math
 import re
 import time
 import sqlite3
@@ -145,8 +146,6 @@ class Config:
     language: str = "en"          # "en" | "de"
     schedule: list[str] = field(default_factory=lambda: ["19:30"])  # local times the timer runs
 
-    budget_daily_eur: float = 15.0
-    budget_monthly_eur: float = 400.0
     pricing: dict[str, dict[str, float]] = field(default_factory=lambda: dict(DEFAULT_PRICING))
 
     approval_keywords: list[str] = field(default_factory=lambda: list(DEFAULT_APPROVAL_KEYWORDS))
@@ -195,10 +194,6 @@ def _apply_yaml(cfg: Config, data: dict[str, Any]) -> None:
         cfg.schedule = [str(s) for s in data["schedule"]]
     elif data.get("schedule"):
         cfg.schedule = [str(data["schedule"])]
-    if "budget" in data:
-        b = data["budget"]
-        cfg.budget_daily_eur = float(b.get("daily_eur", cfg.budget_daily_eur))
-        cfg.budget_monthly_eur = float(b.get("monthly_eur", cfg.budget_monthly_eur))
     if isinstance(data.get("pricing"), dict):
         cfg.pricing.update(data["pricing"])
     if isinstance(data.get("approval_keywords"), list):
@@ -231,8 +226,6 @@ def _apply_env(cfg: Config) -> None:
     if e("REPORTS_TIMEZONE"):        cfg.timezone = e("REPORTS_TIMEZONE")
     if e("REPORTS_LANGUAGE"):        cfg.language = e("REPORTS_LANGUAGE")
     if e("REPORTS_SCHEDULE"):        cfg.schedule = [s.strip() for s in e("REPORTS_SCHEDULE").split(",") if s.strip()]
-    if e("REPORTS_BUDGET_DAILY"):    cfg.budget_daily_eur = float(e("REPORTS_BUDGET_DAILY"))
-    if e("REPORTS_BUDGET_MONTHLY"):  cfg.budget_monthly_eur = float(e("REPORTS_BUDGET_MONTHLY"))
     # LLM
     if e("REPORTS_LLM_ENABLED"):     cfg.llm.enabled = e("REPORTS_LLM_ENABLED") not in ("0", "false", "False", "")
     if e("REPORTS_LLM_PROVIDER"):    cfg.llm.provider = e("REPORTS_LLM_PROVIDER")
@@ -1367,6 +1360,7 @@ columns we prefer those for a true per-run figure (see KanbanSource).
 """
 
 import json
+import math
 import re
 import subprocess
 import time
@@ -1540,6 +1534,12 @@ CREATE TABLE IF NOT EXISTS build_status (
     finished_at  INTEGER,
     error        TEXT
 );
+CREATE TABLE IF NOT EXISTS budget_limits (
+    id           INTEGER PRIMARY KEY CHECK (id = 1),
+    daily_eur    REAL NOT NULL CHECK (daily_eur >= 0),
+    monthly_eur  REAL NOT NULL CHECK (monthly_eur >= 0),
+    updated_at   INTEGER NOT NULL
+);
 """
 
 
@@ -1561,7 +1561,45 @@ class Store:
         except Exception:
             pass
         self.conn.execute("INSERT OR IGNORE INTO build_status(id,state) VALUES(1,'idle')")
+        # Budget limits are plugin-owned state. They deliberately do not import
+        # legacy config.yaml values: every database begins at the fixed defaults.
+        self.conn.execute(
+            "INSERT OR IGNORE INTO budget_limits(id,daily_eur,monthly_eur,updated_at) VALUES(1,15.0,400.0,?)",
+            (int(time.time()),),
+        )
         self.conn.commit()
+
+    def get_budget_limits(self) -> dict:
+        row = self.conn.execute(
+            "SELECT daily_eur, monthly_eur, updated_at FROM budget_limits WHERE id=1"
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("budget limits are unavailable")
+        return {"daily_eur": float(row["daily_eur"]),
+                "monthly_eur": float(row["monthly_eur"]),
+                "updated_at": int(row["updated_at"])}
+
+    def set_budget_limits(self, daily_eur: Any, monthly_eur: Any) -> dict:
+        def valid(value: Any, name: str) -> float:
+            if isinstance(value, bool):
+                raise ValueError(f"{name} must be a non-negative number")
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                raise ValueError(f"{name} must be a non-negative number") from None
+            if not math.isfinite(number) or number < 0:
+                raise ValueError(f"{name} must be a non-negative number")
+            return number
+
+        daily = valid(daily_eur, "daily_eur")
+        monthly = valid(monthly_eur, "monthly_eur")
+        updated_at = int(time.time())
+        self.conn.execute(
+            "UPDATE budget_limits SET daily_eur=?, monthly_eur=?, updated_at=? WHERE id=1",
+            (daily, monthly, updated_at),
+        )
+        self.conn.commit()
+        return self.get_budget_limits()
 
     # -- summaries -------------------------------------------------------
 
@@ -2607,6 +2645,7 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = 
         ][:25]
 
         # 4) cost / usage
+        limits = store.get_budget_limits()
         usage = fetch_usage(cfg, days=1)
         usage_month = fetch_usage(cfg, days=_days_into_month(date_str, cfg.timezone))
         today_eur = estimate_cost_eur(usage, cfg)
@@ -2616,7 +2655,7 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = 
         caveat = _CAVEAT[lang] if not src.has_run_token_columns() else ""
         cost = {
             "today_eur": round(today_eur, 2), "month_eur": round(month_eur, 2),
-            "budget_daily": cfg.budget_daily_eur, "budget_monthly": cfg.budget_monthly_eur,
+            "budget_daily": limits["daily_eur"], "budget_monthly": limits["monthly_eur"],
             "runs": runs, "tokens": usage.total_tokens, "source": usage.source,
             "caveat": caveat or usage.caveat, "approx": True,
         }
@@ -2652,7 +2691,7 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = 
             "date": date_str, "range": "day", "board": board,
             "generated_at": int(time.time()),
             "header": {"status": status, "open": len(hand),
-                       "cost_eur": round(today_eur, 2), "budget_eur": cfg.budget_daily_eur},
+                       "cost_eur": round(today_eur, 2), "budget_eur": limits["daily_eur"]},
             "hand": [_decision_view(d) for d in hand],
             "in_progress": in_progress, "done": done, "learned": learned,
             "models": models, "overview": overview, "verification": verification,
@@ -2809,6 +2848,7 @@ def build_range(cfg: Config, from_date: str, to_date: str, board: str = "all") -
             d = store.get_digest(board, ds) or build_digest(cfg, ds, board=board)
             days.append(d)
             cur += timedelta(days=1)
+        limits = store.get_budget_limits()
         cost_sum = round(sum(d["cost"]["today_eur"] for d in days), 2)
         done = [item for d in days for item in d["done"]]
         hand_open = days[-1]["hand"] if days else []
@@ -2823,7 +2863,7 @@ def build_range(cfg: Config, from_date: str, to_date: str, board: str = "all") -
             "range": "custom", "from": from_date, "to": to_date, "board": board,
             "generated_at": int(time.time()),
             "cost_eur": cost_sum, "done": done, "hand": hand_open,
-            "budget_daily": cfg.budget_daily_eur, "budget_monthly": cfg.budget_monthly_eur,
+            "budget_daily": limits["daily_eur"], "budget_monthly": limits["monthly_eur"],
             "num_days": len(days),
             "learned": learned, "decision_stats": stats, "models": range_models,
             "system": {"insights": range_insights},
@@ -3165,6 +3205,25 @@ if router is not None:
             store.close()
         return {"build": bs, "next_run": next_run(cfg), "schedule": cfg.schedule,
                 "timezone": cfg.timezone}
+
+    @router.get("/budget-limits")
+    def budget_limits():
+        store = Store(load_config())
+        try:
+            return store.get_budget_limits()
+        finally:
+            store.close()
+
+    @router.post("/budget-limits")
+    def update_budget_limits(body: dict = Body(default={})):
+        body = body or {}
+        store = Store(load_config())
+        try:
+            return store.set_budget_limits(body.get("daily_eur"), body.get("monthly_eur"))
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
+        finally:
+            store.close()
 
     @router.post("/build")
     def build(body: dict = Body(default={})):

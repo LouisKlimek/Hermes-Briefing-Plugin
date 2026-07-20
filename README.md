@@ -177,11 +177,10 @@ Or one cron line:
 
 ## Configuration
 
-Everything is optional and lives in `~/.hermes/briefing/config.yaml`; `REPORTS_*` env vars override it.
+Everything below is optional and lives in `~/.hermes/briefing/config.yaml`; `REPORTS_*` env vars override it. Budget limits are not configuration: manage the daily and monthly EUR limits with the pen action in the Briefing tab's **Cost** panel. They are stored in the plugin-owned `~/.hermes/briefing/briefing.db` `budget_limits` row, initialized to EUR 15/day and EUR 400/month on first use. Existing config-file budget values are ignored.
 
 | Key | What it does |
 | --- | --- |
-| `budget.daily_eur` / `monthly_eur` | Drives the budget bar and the `← knapp am Limit` flag. |
 | `pricing` | $ (USD) per 1M tokens per model. **Verify against your provider** — defaults are placeholders, so cost is rendered with `≈`. |
 | `approval_keywords` | Substrings in a `blocked` reason that mean "a human must decide". German + English defaults included. |
 | `protocol_violation_alert_threshold` | Flag a task as _Instabil_ after this many violations in a window. |
@@ -208,6 +207,7 @@ Mounted at `/api/plugins/briefing/`:
 | `/render/{date}` | GET | the Markdown briefing (text/plain) |
 | `/ensure?days=N` | GET | build the last N days on demand (today first) |
 | `/status` | GET | build-in-progress state, next scheduled run, last built |
+| `/budget-limits` | GET / POST | read or save non-negative daily/monthly EUR limits in Briefing's own SQLite database |
 | `/build` | POST | background build — `{"days":N}` bootstraps, `{"date":"…"}` rebuilds one day |
 | `/range?from_=&to=` | GET | weekly/monthly roll-up |
 | `/decisions` | GET | open "needs your hand" items |
