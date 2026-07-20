@@ -68,6 +68,21 @@ class BoardSourceTests(unittest.TestCase):
         self.assertNotIn('digest.in_progress.map(function (t, i)', bundle)
         self.assertIn('title: "Tasks (" + ((props.tasks || []).length)', bundle)
 
+    def test_task_list_groups_start_collapsed_across_report_periods(self):
+        bundle = (Path(__file__).parents[1] / "dashboard" / "dist" / "index.js").read_text()
+        task_view_start = bundle.index("function TaskListView")
+        daily_start = bundle.index("function DigestView")
+        range_start = bundle.index("function RangeView")
+        task_view = bundle[task_view_start:daily_start]
+        daily = bundle[daily_start:range_start]
+        range_view = bundle[range_start:]
+
+        self.assertIn('listOpen = groupsOpen[listKey] === true', task_view)
+        self.assertIn('next[listKey] = !listOpen', task_view)
+        self.assertIn('h(TaskListChart, { tasks: all, target: props.target })', task_view)
+        self.assertIn('h(TaskListView, { tasks: props.tasks', daily)
+        self.assertIn('h(TaskListView, { tasks: props.tasks', range_view)
+
     def test_daily_models_follow_cost_and_low_priority_sections_start_collapsed(self):
         bundle = (Path(__file__).parents[1] / "dashboard" / "dist" / "index.js").read_text()
         daily_start = bundle.index("function DigestView")
