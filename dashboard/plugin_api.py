@@ -404,6 +404,11 @@ def _bucket_of(token: Any) -> Optional[str]:
     return None
 
 
+def _is_archived_status(status: Any) -> bool:
+    """Archived cards are retained in some boards but are not live briefing items."""
+    return "archiv" in _canon(status)
+
+
 def _bucket_ev(kind: Any, data: Any) -> Optional[str]:
     """Canonical transition for an event: prefer an explicit status-like field
     in the payload (the real transition target), else read the kind as a verb."""
@@ -1761,15 +1766,18 @@ class Store:
         return d
 
     def reconcile_decisions(self, tasks: dict) -> int:
-        """Auto-close open decisions whose task has clearly moved past blocked.
+        """Auto-close open decisions whose task is no longer reportable.
 
         Prevents stale 'needs your hand' items on first-install bootstrap, when a
-        task was blocked days ago but has since been unblocked / completed.
+        task was blocked days ago but has since been unblocked, completed, or
+        deleted from the live Kanban board.
         """
         closed = 0
         for d in self.open_decisions():
             t = tasks.get(d.get("task_id"))
             if not t:
+                if self.resolve_decision(d["id"], "auto-removed"):
+                    closed += 1
                 continue
             sb = _bucket_of(t.status)
             if sb == "done":
@@ -2539,7 +2547,12 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = 
     try:
         store.expire_due()
         events = src.fetch_events(start_ts, end_ts)
-        tasks = src.fetch_tasks()  # snapshot of current statuses
+        # The live task snapshot is authoritative for a fresh briefing. Event
+        # history can outlive a deleted card, and archived cards must not revive
+        # through old decisions or transitions.
+        tasks = {tid: task for tid, task in src.fetch_tasks().items()
+                 if not _is_archived_status(task.status)}
+        events = [event for event in events if event.task_id in tasks]
 
         # For historical rebuilds, reconstruct each task's status AS OF THIS DAY
         # from the full event history up to end-of-day, so lights/KPIs/pills show
