@@ -567,7 +567,7 @@
           h("option", { value: "created" }, "Newest first"), h("option", { value: "title" }, "Title"))),
       h(TaskListChart, { tasks: all, target: props.target }),
       !visible.length ? h("div", { className: "brf-task-empty" }, "No tasks match this report.") : listOrder.map(function (list) {
-        var listKey = "list::" + list, listOpen = groupsOpen[listKey] !== false, listTasks = listGroups[list];
+        var listKey = "list::" + list, listOpen = groupsOpen[listKey] === true, listTasks = listGroups[list];
         var statusOrder = [], statusGroups = {};
         listTasks.forEach(function (task) {
           var nested = task.parent_id && (children[task.parent_id] || []).some(function (child) { return child.id === task.id; });
