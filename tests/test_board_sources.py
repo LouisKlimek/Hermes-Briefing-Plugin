@@ -195,6 +195,46 @@ class BoardSourceTests(unittest.TestCase):
 
         self.assertEqual(api.build_task_view(Source(), 100, 200), {"tasks": []})
 
+    def test_fresh_digest_omits_deleted_and_archived_ticket_events(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "profile"
+            db = home / "kanban.db"
+            db.parent.mkdir(parents=True)
+            with sqlite3.connect(db) as conn:
+                conn.executescript("""
+                    CREATE TABLE tasks (
+                        id TEXT PRIMARY KEY, title TEXT, status TEXT, assignee TEXT,
+                        tenant TEXT, priority INTEGER, created_at INTEGER, body TEXT
+                    );
+                    CREATE TABLE task_events (
+                        id INTEGER PRIMARY KEY, task_id TEXT, kind TEXT, data TEXT,
+                        created_at INTEGER
+                    );
+                """)
+                conn.execute("INSERT INTO tasks VALUES ('current', 'Current ticket', 'blocked', '', '', 0, 1, '')")
+                conn.execute("INSERT INTO tasks VALUES ('archived', 'Archived ticket', 'archived', '', '', 0, 1, '')")
+                conn.execute("INSERT INTO task_events VALUES (1, 'current', 'blocked', '{}', 100)")
+                conn.execute("INSERT INTO task_events VALUES (2, 'archived', 'blocked', '{}', 100)")
+                conn.execute("INSERT INTO task_events VALUES (3, 'deleted', 'blocked', '{}', 100)")
+
+            digest = api.build_digest(api.Config(hermes_home=home), "1970-01-01",
+                                      persist=False, mark=False)
+
+            self.assertEqual([item["task_id"] for item in digest["hand"]], ["default::current"])
+
+    def test_reconcile_decisions_closes_missing_ticket_references(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = api.Store(api.Config(hermes_home=Path(tmp) / "profile"))
+            try:
+                store.upsert_decision({
+                    "id": "default::deleted:blocked", "task_id": "default::deleted",
+                    "kind": "blocked", "title": "Deleted ticket", "detail": "", "deadline": None,
+                })
+                self.assertEqual(store.reconcile_decisions({}), 1)
+                self.assertEqual(store.open_decisions(), [])
+            finally:
+                store.close()
+
     def test_tasklist_list_identity_is_exposed_separately_from_the_board(self):
         task = api.Task("alpha::done", "Done", "done", "lead", "", "high", 10,
                         list_name="Client delivery")
