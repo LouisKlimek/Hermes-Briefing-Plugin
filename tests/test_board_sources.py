@@ -174,22 +174,24 @@ class BoardSourceTests(unittest.TestCase):
         self.assertIn('h(TaskListView, { tasks: props.tasks', daily)
         self.assertIn('h(TaskListView, { tasks: props.tasks', range_view)
 
-    def test_daily_models_follow_cost_and_low_priority_sections_start_collapsed(self):
+    def test_daily_profile_usage_follows_cost_and_low_priority_sections_start_collapsed(self):
         bundle = (Path(__file__).parents[1] / "dashboard" / "dist" / "index.js").read_text()
         daily_start = bundle.index("function DigestView")
         range_start = bundle.index("function RangeView")
         daily = bundle[daily_start:range_start]
-        self.assertLess(daily.index('title: "Cost"'), daily.index('title: "Models · " + (digest.models.by_profile.length)'))
+        self.assertLess(daily.index('title: "Cost"'), daily.index('title: "Profile Usage · " + (digest.models.by_profile.length)'))
         self.assertIn('title: "Tasks (" + ((props.tasks || []).length) + ")", defaultCollapsed: true', daily)
-        self.assertIn('title: "Models · " + (digest.models.by_profile.length) + " profiles", defaultCollapsed: true', daily)
+        self.assertIn('title: "Profile Usage · " + (digest.models.by_profile.length) + " profiles", defaultCollapsed: true', daily)
+        self.assertNotIn('title: "Models · " + (digest.models.by_profile.length)', daily)
         self.assertIn('title: "System", defaultCollapsed: true', daily)
 
-    def test_weekly_and_monthly_low_priority_sections_start_collapsed_with_tasks_label(self):
+    def test_weekly_and_monthly_profile_usage_sections_start_collapsed_with_tasks_label(self):
         bundle = (Path(__file__).parents[1] / "dashboard" / "dist" / "index.js").read_text()
         range_view = bundle[bundle.index("function RangeView"):bundle.index("function StatusBar")]
         self.assertIn('title: "Still open (" + r.hand.length + ")", defaultCollapsed: true', range_view)
         self.assertIn('title: "Tasks (" + ((props.tasks || []).length) + ")", defaultCollapsed: true', range_view)
-        self.assertIn('title: "Models \\u00b7 " + (r.models.by_profile.length) + " profiles", defaultCollapsed: true', range_view)
+        self.assertIn('title: "Profile Usage \\u00b7 " + (r.models.by_profile.length) + " profiles", defaultCollapsed: true', range_view)
+        self.assertNotIn('title: "Models \\u00b7 " + (r.models.by_profile.length)', range_view)
         self.assertIn('title: "System", defaultCollapsed: true', range_view)
         self.assertNotIn('Task transitions', range_view)
 
