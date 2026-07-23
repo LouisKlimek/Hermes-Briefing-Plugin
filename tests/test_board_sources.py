@@ -64,6 +64,19 @@ def make_state_db(path: Path, rows: list[tuple]) -> None:
         conn.executemany("INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
 
 
+def make_identified_state_db(path: Path, rows: list[tuple]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as conn:
+        conn.executescript("""
+            CREATE TABLE sessions (
+                session_id TEXT, started_at INTEGER, model TEXT, input_tokens INTEGER,
+                output_tokens INTEGER, cache_read_tokens INTEGER,
+                cache_write_tokens INTEGER, actual_cost REAL
+            );
+        """)
+        conn.executemany("INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)
+
+
 def make_chat_session_db(path: Path, rows: list[tuple]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as conn:
@@ -541,6 +554,94 @@ class BoardSourceTests(unittest.TestCase):
             self.assertEqual(digest["cost"]["today_eur"], 2.25)
             self.assertTrue(insights["cost_approximate"])
             self.assertEqual(next(row for row in insights["by_profile"] if row["profile"] == "no-db")["sessions"], 0)
+
+    def test_default_telemetry_discovery_is_direct_only_and_preserves_standalone_homes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "profiles"
+            home = root / "ceo-orchestrator"
+            start, end, _ = api.day_bounds("2024-01-02", "UTC")
+            make_state_db(home / "state.db", [(start, "a", 1, 0, 0, 0, 1.0)])
+            make_state_db(root / "worker" / "state.db", [(start, "b", 2, 0, 0, 0, 2.0)])
+            make_state_db(root / "nested" / "deep" / "state.db", [(start, "c", 4, 0, 0, 0, 4.0)])
+
+            insights = api.build_insights(api.Config(hermes_home=home, timezone="UTC"), start, end)
+            self.assertEqual(insights["included_profiles"], ["ceo-orchestrator", "worker"])
+            self.assertEqual(insights["overview"]["total_tokens"], 3)
+            self.assertEqual(insights["cost"], 3.0)
+
+            active_alias = Path(tmp) / "active-home"
+            active_alias.symlink_to(home, target_is_directory=True)
+            via_alias = api.build_insights(api.Config(hermes_home=active_alias, timezone="UTC"), start, end)
+            self.assertEqual(via_alias["overview"]["total_tokens"], 3)
+            self.assertIn("worker", via_alias["included_profiles"])
+
+            standalone = Path(tmp) / "solo-root" / "standalone"
+            make_state_db(standalone / "state.db", [(start, "solo", 3, 0, 0, 0, 3.0)])
+            solo = api.build_insights(api.Config(hermes_home=standalone, timezone="UTC"), start, end)
+            self.assertEqual(solo["included_profiles"], ["standalone"])
+            self.assertEqual(solo["overview"]["sessions"], 1)
+
+    def test_telemetry_path_and_session_id_deduplication_are_auditable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "profiles"
+            home = root / "dashboard"
+            worker = root / "worker" / "state.db"
+            start, end, _ = api.day_bounds("2024-01-02", "UTC")
+            make_identified_state_db(home / "state.db", [("shared", start, "a", 10, 0, 0, 0, 1.0)])
+            make_identified_state_db(worker, [
+                ("shared", start, "a", 10, 0, 0, 0, 1.0),
+                ("worker-only", start, "b", 20, 0, 0, 0, 2.0),
+            ])
+            alias = Path(tmp) / "alias-state.db"
+            alias.symlink_to(home / "state.db")
+
+            insights = api.build_insights(
+                api.Config(hermes_home=home, telemetry_profile_dbs=[alias], timezone="UTC"), start, end)
+            diagnostics = insights["telemetry_sources"]
+            self.assertEqual(insights["overview"]["sessions"], 2)
+            self.assertEqual(insights["overview"]["total_tokens"], 30)
+            self.assertEqual(insights["cost"], 3.0)
+            self.assertEqual(diagnostics["path_duplicates_skipped"], 2)
+            self.assertEqual(diagnostics["deduplication"]["deduplicated_sessions"], 1)
+
+    def test_distinct_unidentified_rows_count_and_invalid_sources_are_reported(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "profiles"
+            home = root / "dashboard"
+            start, end, _ = api.day_bounds("2024-01-02", "UTC")
+            same_row = (start, "same", 10, 1, 0, 0, 1.0)
+            make_state_db(home / "state.db", [same_row])
+            make_state_db(root / "worker" / "state.db", [same_row])
+            malformed = root / "broken" / "state.db"
+            malformed.parent.mkdir(parents=True)
+            malformed.write_text("not a sqlite database")
+            unsupported = root / "legacy" / "state.db"
+            unsupported.parent.mkdir(parents=True)
+            with sqlite3.connect(unsupported) as conn:
+                conn.execute("CREATE TABLE sessions (id TEXT)")
+
+            insights = api.build_insights(api.Config(hermes_home=home, timezone="UTC"), start, end)
+            diagnostics = insights["telemetry_sources"]
+            self.assertEqual(insights["overview"]["sessions"], 2)
+            self.assertEqual(insights["overview"]["total_tokens"], 22)
+            self.assertEqual(diagnostics["deduplication"]["deduplicated_sessions"], 0)
+            self.assertEqual(set(diagnostics["deduplication"]["sources_without_safe_session_id"]), {"dashboard", "worker"})
+            self.assertEqual({item["profile"] for item in diagnostics["skipped_sources"]}, {"broken", "legacy"})
+
+    def test_telemetry_diagnostics_flow_into_daily_and_range_reports(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "profiles"
+            home = root / "dashboard"
+            start, _, _ = api.day_bounds("2024-01-02", "UTC")
+            make_state_db(home / "state.db", [(start, "a", 1, 0, 0, 0, 1.0)])
+            make_state_db(root / "worker" / "state.db", [(start, "b", 2, 0, 0, 0, 2.0)])
+            make_board(home / "kanban.db", "task", start)
+            cfg = api.Config(hermes_home=home, timezone="UTC")
+
+            digest = api.build_digest(cfg, "2024-01-02", persist=False, mark=False)
+            rolled = api.build_range(cfg, "2024-01-02", "2024-01-02")
+            self.assertEqual(digest["cost"]["telemetry_sources"]["source_count"], 2)
+            self.assertEqual(rolled["telemetry_sources"]["source_count"], 2)
 
     def test_actual_cost_wins_over_estimation_and_ranges_sum_their_windows(self):
         with tempfile.TemporaryDirectory() as tmp:
