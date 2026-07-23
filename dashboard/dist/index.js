@@ -491,6 +491,18 @@
     if (!ts) return "—";
     try { return new Date(ts * 1000).toLocaleDateString(); } catch (e) { return "—"; }
   }
+  function HumanChatSessions(props) {
+    var sessions = props.sessions || [];
+    return h(Section, { title: "Human Chat Sessions (" + sessions.length + ")" },
+      !sessions.length ? h("div", { style: { fontSize: "0.82rem", color: MUTED } }, "No human chat sessions in this range.")
+        : h("div", { style: { display: "grid", gap: "0.4rem" } }, sessions.map(function (session, i) {
+          return h("div", { key: session.started_at + "::" + i, className: "brf-card", style: {
+              border: "1px solid var(--color-border)", borderRadius: "0.5rem", padding: "0.45rem 0.6rem", background: "var(--color-card)" } },
+            h("div", { style: { fontSize: "0.84rem", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, session.title || "Untitled chat"),
+            h("div", { style: { fontSize: "0.72rem", color: MUTED, marginTop: "0.15rem" } },
+              (Number(session.message_count) || 0) + " messages · " + taskDate(session.started_at) + " · " + (session.model || "Unknown model")));
+        })));
+  }
   function taskStatusBucket(status) {
     var value = canonStatus(status);
     if (/(done|complete|finish|close|resolve|archiv)/.test(value)) return "done";
@@ -621,6 +633,7 @@
       Separator ? h(Separator, { style: { margin: "0.5rem 0" } }) : null,
 
       h(Section, { title: "Tasks (" + ((props.tasks || []).length) + ")", defaultCollapsed: true }, h(TaskListView, { tasks: props.tasks, loading: props.tasksLoading, target: props.target })),
+      h(HumanChatSessions, { sessions: digest.human_chat_sessions }),
       (digest.learned && digest.learned.length)
         ? h(Section, { title: "Insights (" + digest.learned.length + ")" }, h(LearnedCards, { items: digest.learned, target: props.target }))
         : null,
@@ -664,6 +677,7 @@
               d.detail ? h("div", { style: { fontSize: "0.76rem", color: MUTED, lineHeight: 1.5, marginTop: "0.25rem", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" } }, d.detail) : null,
               h("a", { href: t.url, style: { display: "inline-block", marginTop: "0.4rem", fontSize: "0.76rem", fontWeight: 600, textDecoration: "none", color: "inherit", border: "1px solid var(--color-border)", borderRadius: "0.4rem", padding: "0.12rem 0.5rem" } }, "Open ticket \u2192")); }))) : null,
       h(Section, { title: "Tasks (" + ((props.tasks || []).length) + ")", defaultCollapsed: true }, h(TaskListView, { tasks: props.tasks, loading: props.tasksLoading, target: props.target })),
+      h(HumanChatSessions, { sessions: r.human_chat_sessions }),
       (r.models && r.models.total_runs) ? h(Section, { title: "Models \u00b7 " + (r.models.by_profile.length) + " profiles", defaultCollapsed: true }, h(ModelsTable, { models: r.models })) : null,
       (r.system && r.system.insights && r.system.insights.available) ? h(Section, { title: "System", defaultCollapsed: true }, h(InsightsBlock, { insights: r.system.insights, stable: true })) : null,
       (r.learned && r.learned.length) ? h(Section, { title: "Insights (" + r.learned.length + ")" }, h(LearnedCards, { items: r.learned, target: props.target })) : null);
