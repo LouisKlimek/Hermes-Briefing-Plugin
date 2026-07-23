@@ -188,6 +188,9 @@ Everything below is optional and lives in `~/.hermes/briefing/config.yaml`; `REP
 | `language` | `en` (default) or `de`. |
 | `external_board_roots` | Explicit read-only board roots outside this profile. Each entry is a directory containing `<slug>/kanban.db`; these are added to normal profile-local discovery. |
 | `external_board_dbs` | Explicit read-only paths to individual allowed `kanban.db` files; the board picker uses the DB parent directory as its slug. |
+| `telemetry_profile_roots` | Explicit read-only profile roots containing `<profile>/state.db`. This enables all-profile historical session telemetry; it never scans an implicit host directory. |
+| `telemetry_profile_dbs` | Explicit allowlist of individual profile `state.db` files. Duplicate paths are counted once; missing/incompatible DBs safely contribute zero. |
+| `REPORTS_TELEMETRY_PROFILE_ROOTS` / `REPORTS_TELEMETRY_PROFILE_DBS` | Environment equivalents, with entries separated by the platform path separator. |
 | `kanban_db` / `REPORTS_KANBAN_DB` | Explicit **single-board** override. It takes precedence over both external-source options and does not aggregate them. |
 | `llm.enabled` | Turn on for richer "why" lines. Any OpenAI-compatible endpoint or Anthropic. ≤120 tokens, cached, cheap. |
 | `schema` | Column-name overrides — only if PRAGMA auto-detection guesses wrong. |

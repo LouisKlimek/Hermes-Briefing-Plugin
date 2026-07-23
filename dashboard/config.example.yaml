@@ -14,6 +14,16 @@ language: en            # en | de
 # external_board_dbs:
 #   - /srv/approved-boards/operations/kanban.db
 
+# Optional, explicit read-only session telemetry across configured Hermes profiles.
+# Each root contains <profile>/state.db; individual DBs form an allowlist.
+# Without these settings, Briefing reads only its own <hermes_home>/state.db.
+# REPORTS_TELEMETRY_PROFILE_ROOTS and REPORTS_TELEMETRY_PROFILE_DBS accept the
+# same paths separated by the platform path separator.
+# telemetry_profile_roots:
+#   - /srv/hermes/profiles
+# telemetry_profile_dbs:
+#   - /srv/approved-profiles/worker/state.db
+
 # TaskList membership is read from <hermes_home>/tasklist/lists.db when the
 # plugin is installed. Set this only when that read-only DB lives elsewhere.
 # Missing or incompatible TaskList DBs render tasks as "No List".
