@@ -77,6 +77,19 @@ def make_identified_state_db(path: Path, rows: list[tuple]) -> None:
         conn.executemany("INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)
 
 
+def make_local_id_state_db(path: Path, rows: list[tuple]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as conn:
+        conn.executescript("""
+            CREATE TABLE sessions (
+                id INTEGER PRIMARY KEY, started_at INTEGER, model TEXT, input_tokens INTEGER,
+                output_tokens INTEGER, cache_read_tokens INTEGER,
+                cache_write_tokens INTEGER, actual_cost REAL
+            );
+        """)
+        conn.executemany("INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?)", rows)
+
+
 def make_chat_session_db(path: Path, rows: list[tuple]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as conn:
@@ -603,6 +616,24 @@ class BoardSourceTests(unittest.TestCase):
             self.assertEqual(insights["cost"], 3.0)
             self.assertEqual(diagnostics["path_duplicates_skipped"], 2)
             self.assertEqual(diagnostics["deduplication"]["deduplicated_sessions"], 1)
+
+    def test_equal_local_session_ids_from_distinct_profile_dbs_are_both_counted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "profiles"
+            home = root / "dashboard"
+            worker = root / "worker" / "state.db"
+            start, end, _ = api.day_bounds("2024-01-02", "UTC")
+            make_local_id_state_db(home / "state.db", [(1, start, "a", 10, 0, 0, 0, 1.0)])
+            make_local_id_state_db(worker, [(1, start, "b", 20, 0, 0, 0, 2.0)])
+
+            insights = api.build_insights(api.Config(hermes_home=home, timezone="UTC"), start, end)
+            diagnostics = insights["telemetry_sources"]
+
+            self.assertEqual(insights["overview"]["sessions"], 2)
+            self.assertEqual(insights["overview"]["total_tokens"], 30)
+            self.assertEqual(diagnostics["deduplication"]["deduplicated_sessions"], 0)
+            self.assertEqual(set(diagnostics["deduplication"]["sources_without_safe_session_id"]),
+                             {"dashboard", "worker"})
 
     def test_distinct_unidentified_rows_count_and_invalid_sources_are_reported(self):
         with tempfile.TemporaryDirectory() as tmp:

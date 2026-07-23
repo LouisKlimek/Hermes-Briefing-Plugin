@@ -2549,7 +2549,8 @@ def _build_insights_single(cfg: Config, start_ts: int, end_ts: int) -> dict:
             pass
 
 
-_GLOBAL_SESSION_ID_COLUMNS = ("session_id", "session_uuid", "uuid", "id")
+# `id` is intentionally excluded: SQLite primary keys are local to each state.db.
+_GLOBAL_SESSION_ID_COLUMNS = ("session_id", "session_uuid", "uuid")
 
 
 def _canonical_path(path: Path) -> Path:
