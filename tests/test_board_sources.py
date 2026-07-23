@@ -64,7 +64,60 @@ def make_state_db(path: Path, rows: list[tuple]) -> None:
         conn.executemany("INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
 
 
+def make_chat_session_db(path: Path, rows: list[tuple]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as conn:
+        conn.executescript("""
+            CREATE TABLE sessions (
+                title TEXT, message_count INTEGER, started_at INTEGER, model TEXT
+            );
+        """)
+        conn.executemany("INSERT INTO sessions VALUES (?, ?, ?, ?)", rows)
+
+
 class BoardSourceTests(unittest.TestCase):
+    def test_human_chat_sessions_selects_only_configured_profile_rows_in_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "profile"
+            make_chat_session_db(home / "state.db", [
+                ("Normal chat", 4, 150, "gpt-5"),
+                ("work kanban task t_deadbeef", 9, 175, "worker-model"),
+                ("WORK KANBAN TASK T_ABC123", 8, 180, "worker-model"),
+                ("work kanban task t_abc123 extra", 3, 190, "gpt-5"),
+                (None, None, 200, None),
+                ("Outside window", 1, 201, "gpt-5"),
+            ])
+            other = Path(tmp) / "other" / "state.db"
+            make_chat_session_db(other, [("Other profile", 1, 199, "gpt-5")])
+            cfg = api.Config(hermes_home=home, telemetry_profile_dbs=[other])
+
+            rows = api.human_chat_sessions(cfg, 100, 201)
+            empty_rows = api.human_chat_sessions(cfg, 202, 300)
+
+        self.assertEqual([row["title"] for row in rows], ["", "work kanban task t_abc123 extra", "Normal chat"])
+        self.assertEqual(rows[0], {"title": "", "message_count": 0, "started_at": 200, "model": ""})
+        self.assertEqual(rows[-1]["model"], "gpt-5")
+        self.assertEqual(empty_rows, [])
+
+    def test_human_chat_sessions_and_dashboard_contract_cover_daily_weekly_monthly_views(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "profile"
+            make_chat_session_db(home / "state.db", [("Normal chat", 4, 100, "gpt-5")])
+            make_board(home / "kanban.db", "task", 100)
+            cfg = api.Config(hermes_home=home, timezone="UTC")
+
+            daily = api.build_digest(cfg, "1970-01-01", persist=False, mark=False)
+            weekly = api.build_range(cfg, "1970-01-01", "1970-01-01")
+
+        self.assertEqual(daily["human_chat_sessions"][0]["title"], "Normal chat")
+        self.assertEqual(weekly["human_chat_sessions"][0]["title"], "Normal chat")
+        bundle = (Path(__file__).parents[1] / "dashboard" / "dist" / "index.js").read_text()
+        daily_view = bundle[bundle.index("function DigestView"):bundle.index("function RangeView")]
+        range_view = bundle[bundle.index("function RangeView"):bundle.index("function StatusBar")]
+        self.assertIn('function HumanChatSessions', bundle)
+        self.assertIn('title: "Human Chat Sessions (" + sessions.length + ")"', bundle)
+        self.assertIn('h(HumanChatSessions, { sessions: digest.human_chat_sessions })', daily_view)
+        self.assertIn('h(HumanChatSessions, { sessions: r.human_chat_sessions })', range_view)
     def test_report_embeds_the_grouped_task_view_without_a_tasks_tab(self):
         bundle = (Path(__file__).parents[1] / "dashboard" / "dist" / "index.js").read_text()
         self.assertIn('h(Section, { title: "Tasks ("', bundle)

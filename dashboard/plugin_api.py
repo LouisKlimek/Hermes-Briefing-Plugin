@@ -2570,6 +2570,44 @@ def telemetry_sources(cfg: Config) -> list[tuple[str, Path]]:
     return out
 
 
+_KANBAN_WORKER_SESSION_TITLE = re.compile(r"^work kanban task t_[0-9a-f]+$", re.IGNORECASE)
+
+
+def human_chat_sessions(cfg: Config, start_ts: int, end_ts: int) -> list[dict]:
+    """Read direct chats from this profile's state DB for an exact report window."""
+    db = cfg.hermes_home / "state.db"
+    if not db.exists():
+        return []
+    conn = None
+    try:
+        conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout=4000")
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(sessions)")}
+        if "started_at" not in cols:
+            return []
+
+        def select(name: str) -> str:
+            return f'"{name}"' if name in cols else f"NULL AS {name}"
+
+        rows = conn.execute(
+            "SELECT " + ", ".join(select(name) for name in ("title", "message_count", "started_at", "model"))
+            + " FROM sessions WHERE started_at >= ? AND started_at < ? ORDER BY started_at DESC",
+            (start_ts, end_ts),
+        ).fetchall()
+        return [
+            {"title": str(row["title"] or ""), "message_count": int(row["message_count"] or 0),
+             "started_at": int(row["started_at"] or 0), "model": str(row["model"] or "")}
+            for row in rows
+            if not _KANBAN_WORKER_SESSION_TITLE.fullmatch(str(row["title"] or ""))
+        ]
+    except (OSError, sqlite3.Error, TypeError, ValueError):
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
 def build_insights(cfg: Config, start_ts: int, end_ts: int) -> dict:
     """Aggregate exact-window, read-only session telemetry from allowed profiles only."""
     import sqlite3
@@ -2773,6 +2811,7 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = 
         # for a report that may be rebuilt for a historical day.
         limits = store.get_budget_limits()
         insights = build_insights(cfg, start_ts, end_ts)
+        human_sessions = human_chat_sessions(cfg, start_ts, end_ts)
         month_insights = build_insights(cfg, _month_start_ts(date_str, cfg.timezone), end_ts)
         today_eur, today_approx = insights_cost(insights)
         month_eur, month_approx = insights_cost(month_insights)
@@ -2820,6 +2859,7 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = 
                        "cost_eur": round(today_eur, 2), "budget_eur": limits["daily_eur"]},
             "hand": [_decision_view(d) for d in hand],
             "in_progress": in_progress, "done": done, "learned": learned,
+            "human_chat_sessions": human_sessions,
             "models": models, "overview": overview, "verification": verification,
             "cost": cost, "system": system,
             "decision_stats": store.decision_stats(_month_start_ts(date_str, cfg.timezone)),
@@ -2963,9 +3003,11 @@ def build_range(cfg: Config, from_date: str, to_date: str, board: str = "all") -
         _, rend, _ = day_bounds(to_date, cfg.timezone)
         range_models = build_models(src.fetch_runs_window(rstart, rend), profile_meta(cfg))
         range_insights = build_insights(cfg, rstart, rend)
+        range_human_sessions = human_chat_sessions(cfg, rstart, rend)
     except Exception:
         range_models = {"by_profile": [], "by_model": [], "available": {}, "total_runs": 0}
         range_insights = {"available": False}
+        range_human_sessions = []
     finally:
         src.close()
     try:
@@ -2994,6 +3036,7 @@ def build_range(cfg: Config, from_date: str, to_date: str, board: str = "all") -
             "budget_daily": limits["daily_eur"], "budget_monthly": limits["monthly_eur"],
             "num_days": len(days),
             "learned": learned, "decision_stats": stats, "models": range_models,
+            "human_chat_sessions": range_human_sessions,
             "system": {"insights": range_insights},
             "days": [{"date": d["date"], "cost": d["cost"]["today_eur"],
                       "done": len(d["done"]), "open": len(d["hand"])} for d in days],
@@ -3300,6 +3343,8 @@ if router is not None:
             cached = None if rebuild else store.get_digest(board, date)
         finally:
             store.close()
+        if cached is not None and "human_chat_sessions" not in cached:
+            cached = None
         return cached or build_digest(cfg, date, board=board)   # build on demand
 
     @router.get("/render/{date}", response_class=PlainTextResponse)
