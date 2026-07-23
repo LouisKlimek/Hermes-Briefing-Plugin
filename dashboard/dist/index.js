@@ -644,7 +644,7 @@
         (cost.included_profiles && cost.included_profiles.length) ? h("div", { style: { fontSize: "0.74rem", color: MUTED, marginTop: "0.2rem" } }, "Profiles: " + cost.included_profiles.join(", ")) : null,
         cost.caveat ? h("div", { style: { fontSize: "0.74rem", color: MUTED, marginTop: "0.2rem" } }, "⚠ " + cost.caveat) : null),
       (digest.models && digest.models.total_runs)
-        ? h(Section, { title: "Models · " + (digest.models.by_profile.length) + " profiles", defaultCollapsed: true }, h(ModelsTable, { models: digest.models }))
+        ? h(Section, { title: "Profile Usage · " + (digest.models.by_profile.length) + " profiles", defaultCollapsed: true }, h(ModelsTable, { models: digest.models }))
         : null,
       h(Section, { title: "System", defaultCollapsed: true }, h("div", null,
         (sys.notes && sys.notes.length) ? h("div", { style: { fontSize: "0.8rem", color: "#d14a4a", marginBottom: "0.5rem", fontWeight: 600 } }, sys.notes.join(", ")) : null,
@@ -678,7 +678,7 @@
               h("a", { href: t.url, style: { display: "inline-block", marginTop: "0.4rem", fontSize: "0.76rem", fontWeight: 600, textDecoration: "none", color: "inherit", border: "1px solid var(--color-border)", borderRadius: "0.4rem", padding: "0.12rem 0.5rem" } }, "Open ticket \u2192")); }))) : null,
       h(Section, { title: "Tasks (" + ((props.tasks || []).length) + ")", defaultCollapsed: true }, h(TaskListView, { tasks: props.tasks, loading: props.tasksLoading, target: props.target })),
       h(HumanChatSessions, { sessions: r.human_chat_sessions }),
-      (r.models && r.models.total_runs) ? h(Section, { title: "Models \u00b7 " + (r.models.by_profile.length) + " profiles", defaultCollapsed: true }, h(ModelsTable, { models: r.models })) : null,
+      (r.models && r.models.total_runs) ? h(Section, { title: "Profile Usage \u00b7 " + (r.models.by_profile.length) + " profiles", defaultCollapsed: true }, h(ModelsTable, { models: r.models })) : null,
       (r.system && r.system.insights && r.system.insights.available) ? h(Section, { title: "System", defaultCollapsed: true }, h(InsightsBlock, { insights: r.system.insights, stable: true })) : null,
       (r.learned && r.learned.length) ? h(Section, { title: "Insights (" + r.learned.length + ")" }, h(LearnedCards, { items: r.learned, target: props.target })) : null);
     function stat(label, val) {
