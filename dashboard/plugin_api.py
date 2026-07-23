@@ -141,6 +141,11 @@ class Config:
     # a single-board override and takes precedence over both lists.
     external_board_roots: list[Path] = field(default_factory=list)
     external_board_dbs: list[Path] = field(default_factory=list)
+    # Optional read-only session telemetry outside this profile. Roots contain
+    # <profile>/state.db; individual DBs are an explicit allowlist. Without
+    # either option, only this dashboard profile's state.db is read.
+    telemetry_profile_roots: list[Path] = field(default_factory=list)
+    telemetry_profile_dbs: list[Path] = field(default_factory=list)
     reports_dir: Path | None = None        # default: <hermes_home>/reports
     timezone: str = "Europe/Berlin"
     language: str = "en"          # "en" | "de"
@@ -190,6 +195,10 @@ def _apply_yaml(cfg: Config, data: dict[str, Any]) -> None:
         cfg.external_board_roots = _path_list(data["external_board_roots"])
     if "external_board_dbs" in data:
         cfg.external_board_dbs = _path_list(data["external_board_dbs"])
+    if "telemetry_profile_roots" in data:
+        cfg.telemetry_profile_roots = _path_list(data["telemetry_profile_roots"])
+    if "telemetry_profile_dbs" in data:
+        cfg.telemetry_profile_dbs = _path_list(data["telemetry_profile_dbs"])
     if isinstance(data.get("schedule"), list):
         cfg.schedule = [str(s) for s in data["schedule"]]
     elif data.get("schedule"):
@@ -222,6 +231,10 @@ def _apply_env(cfg: Config) -> None:
         cfg.external_board_roots = _path_list(roots.split(os.pathsep))
     if dbs := e("REPORTS_EXTERNAL_BOARD_DBS"):
         cfg.external_board_dbs = _path_list(dbs.split(os.pathsep))
+    if roots := e("REPORTS_TELEMETRY_PROFILE_ROOTS"):
+        cfg.telemetry_profile_roots = _path_list(roots.split(os.pathsep))
+    if dbs := e("REPORTS_TELEMETRY_PROFILE_DBS"):
+        cfg.telemetry_profile_dbs = _path_list(dbs.split(os.pathsep))
     if e("REPORTS_DIR"):             cfg.reports_dir = e("REPORTS_DIR")
     if e("REPORTS_TIMEZONE"):        cfg.timezone = e("REPORTS_TIMEZONE")
     if e("REPORTS_LANGUAGE"):        cfg.language = e("REPORTS_LANGUAGE")
@@ -2431,8 +2444,8 @@ def run_verification(cfg: Config, date_str: str, src, events: list, tasks: dict,
     return {"checks": checks, "green": green, "red": red, "na": na, "total": len(checks)}
 
 
-def build_insights(cfg: Config, start_ts: int, end_ts: int) -> dict:
-    """Windowed usage analytics from Hermes' state.db (sessions + messages),
+def _build_insights_single(cfg: Config, start_ts: int, end_ts: int) -> dict:
+    """Windowed usage analytics from one Hermes state.db (sessions + messages),
     scoped to [start_ts, end_ts) so day/week/month reports stay accurate even
     when rebuilt for the past. Mirrors `hermes insights`, but date-windowed."""
     import sqlite3
@@ -2534,6 +2547,105 @@ def build_insights(cfg: Config, start_ts: int, end_ts: int) -> dict:
                 conn.close()
         except Exception:
             pass
+
+
+def telemetry_sources(cfg: Config) -> list[tuple[str, Path]]:
+    """Return each explicitly allowed profile state DB once, without discovery outside configured roots."""
+    candidates = [(cfg.hermes_home.name or "dashboard", cfg.hermes_home / "state.db")]
+    for root in cfg.telemetry_profile_roots:
+        try:
+            candidates.extend((child.name, child / "state.db") for child in root.iterdir() if child.is_dir())
+        except OSError:
+            pass
+    candidates.extend((db.parent.name or "profile", db) for db in cfg.telemetry_profile_dbs)
+    seen, out = set(), []
+    for profile, db in candidates:
+        try:
+            key = db.resolve(strict=False)
+        except OSError:
+            key = db.absolute()
+        if key not in seen:
+            seen.add(key)
+            out.append((profile, db))
+    return out
+
+
+def build_insights(cfg: Config, start_ts: int, end_ts: int) -> dict:
+    """Aggregate exact-window, read-only session telemetry from allowed profiles only."""
+    import sqlite3
+    profiles, models = {}, {}
+    totals: dict[str, Any] = {"sessions": 0, "input_tokens": 0, "output_tokens": 0,
+              "cache_read_tokens": 0, "cache_write_tokens": 0}
+    actual_cost = 0.0
+    estimated_cost = 0.0
+    estimated_rows = 0
+    for profile, db in telemetry_sources(cfg):
+        bucket = profiles.setdefault(profile, {"profile": profile, "sessions": 0, "input_tokens": 0,
+            "output_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0, "tokens": 0})
+        if not db.exists():
+            continue
+        conn = None
+        try:
+            conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True, timeout=5)
+            conn.row_factory = sqlite3.Row
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)")}
+            if "started_at" not in cols:
+                continue
+            token_cols = [c for c in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens") if c in cols]
+            selected = ["started_at"] + token_cols
+            if "model" in cols:
+                selected.append("model")
+            cost_col = next((c for c in ("actual_cost", "cost_usd", "cost_eur", "cost") if c in cols), None)
+            if cost_col:
+                selected.append(cost_col)
+            quoted = ", ".join('"' + col + '"' for col in selected)
+            rows = conn.execute(f"SELECT {quoted} FROM sessions WHERE started_at >= ? AND started_at < ?",
+                                (start_ts, end_ts)).fetchall()
+            for row in rows:
+                values = {name: int(row[name] or 0) for name in token_cols}
+                row_tokens = sum(values.values())
+                totals["sessions"] += 1
+                bucket["sessions"] += 1
+                for name, value in values.items():
+                    totals[name] += value
+                    bucket[name] += value
+                bucket["tokens"] += row_tokens
+                model = str(row["model"] or "?") if "model" in cols else "?"
+                model_bucket = models.setdefault(model, {"model": model, "sessions": 0, "tokens": 0})
+                model_bucket["sessions"] += 1
+                model_bucket["tokens"] += row_tokens
+                persisted = row[cost_col] if cost_col else None
+                if persisted is not None:
+                    actual_cost += float(persisted)
+                else:
+                    estimated_rows += 1
+                    estimate = Usage(input_tokens=values.get("input_tokens", 0),
+                                     output_tokens=values.get("output_tokens", 0), total_tokens=row_tokens,
+                                     by_model={model: row_tokens})
+                    estimated_cost += estimate_cost_eur(estimate, cfg)
+        except (OSError, sqlite3.Error, ValueError, TypeError):
+            pass
+        finally:
+            if conn:
+                conn.close()
+    totals["total_tokens"] = sum(totals[k] for k in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens"))
+    totals["cost"] = round(actual_cost + estimated_cost, 6)
+    totals["actual_cost"] = round(actual_cost, 6)
+    totals["estimated_cost"] = round(estimated_cost, 6)
+    totals["cost_approximate"] = bool(estimated_rows)
+    totals["estimated_sessions"] = estimated_rows
+    return {"available": bool(totals["sessions"]), "overview": totals,
+            "by_model": sorted(models.values(), key=lambda row: row["tokens"], reverse=True),
+            "by_profile": sorted(profiles.values(), key=lambda row: row["profile"]),
+            "included_profiles": [profile for profile, _ in telemetry_sources(cfg)],
+            "cost": totals["cost"], "cost_approximate": bool(estimated_rows),
+            "source": "state.db session telemetry (exact window)",
+            "caveat": "Session telemetry may not include every worker run."}
+
+
+def insights_cost(insights: dict) -> tuple[float, bool]:
+    """Return persisted session cost when present, estimating only sessions without it."""
+    return float(insights.get("cost", 0) or 0), bool(insights.get("cost_approximate"))
 
 
 def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = True,
@@ -2657,20 +2769,22 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = 
             for t in tasks.values() if _bucket_of(t.status) == "active"
         ][:25]
 
-        # 4) cost / usage
+        # 4) exact-window cost / usage. Never use relative current-time insights
+        # for a report that may be rebuilt for a historical day.
         limits = store.get_budget_limits()
-        usage = fetch_usage(cfg, days=1)
-        usage_month = fetch_usage(cfg, days=_days_into_month(date_str, cfg.timezone))
-        today_eur = estimate_cost_eur(usage, cfg)
-        month_eur = estimate_cost_eur(usage_month, cfg)
+        insights = build_insights(cfg, start_ts, end_ts)
+        month_insights = build_insights(cfg, _month_start_ts(date_str, cfg.timezone), end_ts)
+        today_eur, today_approx = insights_cost(insights)
+        month_eur, month_approx = insights_cost(month_insights)
         runs = len([e for e in events
                     if e.kind in ("claimed", "spawned") or event_bucket(e) == "active"])
-        caveat = _CAVEAT[lang] if not src.has_run_token_columns() else ""
         cost = {
             "today_eur": round(today_eur, 2), "month_eur": round(month_eur, 2),
             "budget_daily": limits["daily_eur"], "budget_monthly": limits["monthly_eur"],
-            "runs": runs, "tokens": usage.total_tokens, "source": usage.source,
-            "caveat": caveat or usage.caveat, "approx": True,
+            "runs": runs, "tokens": insights.get("overview", {}).get("total_tokens", 0),
+            "source": insights.get("source"), "caveat": insights.get("caveat"),
+            "approx": today_approx, "month_approx": month_approx,
+            "included_profiles": insights.get("included_profiles", []),
         }
 
         # 5) system health from error events
@@ -2681,8 +2795,7 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = 
             for e in err:
                 by_kind[e.kind] = by_kind.get(e.kind, 0) + 1
             notes = [f"{n}× {k}" for k, n in by_kind.items()]
-        system = {"stable": not err, "notes": notes,
-                  "insights": build_insights(cfg, start_ts, end_ts)}
+        system = {"stable": not err, "notes": notes, "insights": insights}
 
         # 6) learned (optional, lightweight: pull short comment lines tagged as notes)
         learned = _extract_learned(src, events, tasks)
@@ -2862,7 +2975,7 @@ def build_range(cfg: Config, from_date: str, to_date: str, board: str = "all") -
             days.append(d)
             cur += timedelta(days=1)
         limits = store.get_budget_limits()
-        cost_sum = round(sum(d["cost"]["today_eur"] for d in days), 2)
+        cost_sum, cost_approx = insights_cost(range_insights)
         done = [item for d in days for item in d["done"]]
         hand_open = days[-1]["hand"] if days else []
         seen_l: set = set(); learned = []
@@ -2875,7 +2988,9 @@ def build_range(cfg: Config, from_date: str, to_date: str, board: str = "all") -
         return {
             "range": "custom", "from": from_date, "to": to_date, "board": board,
             "generated_at": int(time.time()),
-            "cost_eur": cost_sum, "done": done, "hand": hand_open,
+            "cost_eur": round(cost_sum, 2), "cost_approx": cost_approx,
+            "included_profiles": range_insights.get("included_profiles", []),
+            "done": done, "hand": hand_open,
             "budget_daily": limits["daily_eur"], "budget_monthly": limits["monthly_eur"],
             "num_days": len(days),
             "learned": learned, "decision_stats": stats, "models": range_models,

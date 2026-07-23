@@ -52,6 +52,18 @@ def make_tasklist_db(path: Path, board: str, task_id: str, list_name: str) -> No
         conn.execute("INSERT INTO membership VALUES (?, ?, 'backend')", (board, task_id))
 
 
+def make_state_db(path: Path, rows: list[tuple]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as conn:
+        conn.executescript("""
+            CREATE TABLE sessions (
+                started_at INTEGER, model TEXT, input_tokens INTEGER, output_tokens INTEGER,
+                cache_read_tokens INTEGER, cache_write_tokens INTEGER, actual_cost REAL
+            );
+        """)
+        conn.executemany("INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?)", rows)
+
+
 class BoardSourceTests(unittest.TestCase):
     def test_report_embeds_the_grouped_task_view_without_a_tasks_tab(self):
         bundle = (Path(__file__).parents[1] / "dashboard" / "dist" / "index.js").read_text()
@@ -353,9 +365,13 @@ class BoardSourceTests(unittest.TestCase):
         api._apply_yaml(cfg, {
             "external_board_roots": ["/boards-a", "/boards-b"],
             "external_board_dbs": "/allowed/custom/kanban.db",
+            "telemetry_profile_roots": "/approved/profiles",
+            "telemetry_profile_dbs": ["/approved/a/state.db", "/approved/b/state.db"],
         })
         self.assertEqual(cfg.external_board_roots, [Path("/boards-a"), Path("/boards-b")])
         self.assertEqual(cfg.external_board_dbs, [Path("/allowed/custom/kanban.db")])
+        self.assertEqual(cfg.telemetry_profile_roots, [Path("/approved/profiles")])
+        self.assertEqual(cfg.telemetry_profile_dbs, [Path("/approved/a/state.db"), Path("/approved/b/state.db")])
 
     def test_budget_limits_default_to_fixed_database_values_and_ignore_legacy_config(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -439,6 +455,60 @@ class BoardSourceTests(unittest.TestCase):
         self.assertIn('-moz-appearance: textfield;', stylesheet)
         self.assertIn('background: #635bff;', stylesheet)
         self.assertIn('.brf-budget-limit-cancel {', stylesheet)
+
+    def test_historical_all_profile_telemetry_uses_exact_window_without_duplicates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "profiles"
+            home = root / "dashboard"
+            start, end, _ = api.day_bounds("2024-01-02", "Europe/Berlin")
+            make_state_db(home / "state.db", [
+                (start, "gpt-5", 100, 50, 10, 5, 1.25),
+                (start - 1, "gpt-5", 999, 0, 0, 0, 9.99),
+            ])
+            make_board(home / "kanban.db", "day-task", start)
+            worker_db = root / "worker" / "state.db"
+            make_state_db(worker_db, [
+                (end - 1, "other", 1_000_000, 0, 20, 30, None),
+                (end, "other", 1_000_000, 0, 0, 0, None),
+            ])
+            cfg = api.Config(hermes_home=home, telemetry_profile_roots=[root],
+                             telemetry_profile_dbs=[worker_db, root / "no-db" / "state.db"],
+                             timezone="Europe/Berlin")
+            insights = api.build_insights(cfg, start, end)
+
+            self.assertEqual(insights["included_profiles"], ["dashboard", "worker", "no-db"])
+            self.assertEqual(insights["overview"]["sessions"], 2)
+            self.assertEqual(insights["overview"]["input_tokens"], 1_000_100)
+            self.assertEqual(insights["overview"]["cache_read_tokens"], 30)
+            self.assertEqual(insights["overview"]["cache_write_tokens"], 35)
+            self.assertEqual(insights["overview"]["total_tokens"], 1_000_215)
+            self.assertAlmostEqual(insights["cost"], 2.25)
+            digest = api.build_digest(cfg, "2024-01-02", persist=False, mark=False)
+            self.assertEqual(digest["cost"]["tokens"], 1_000_215)
+            self.assertEqual(digest["cost"]["today_eur"], 2.25)
+            self.assertTrue(insights["cost_approximate"])
+            self.assertEqual(next(row for row in insights["by_profile"] if row["profile"] == "no-db")["sessions"], 0)
+
+    def test_actual_cost_wins_over_estimation_and_ranges_sum_their_windows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "dashboard"
+            first_start, first_end, _ = api.day_bounds("2024-01-01", "UTC")
+            second_start, second_end, _ = api.day_bounds("2024-01-02", "UTC")
+            make_state_db(home / "state.db", [
+                (first_start, "gpt-5", 1_000_000, 0, 0, 0, 7.5),
+                (second_start, "gpt-5", 1_000_000, 0, 0, 0, 2.5),
+            ])
+            make_board(home / "kanban.db", "range-task", first_start)
+            cfg = api.Config(hermes_home=home, timezone="UTC")
+            first = api.build_insights(cfg, first_start, first_end)
+            second = api.build_insights(cfg, second_start, second_end)
+            both = api.build_insights(cfg, first_start, second_end)
+
+            self.assertEqual(first["cost"], 7.5)
+            self.assertFalse(first["cost_approximate"])
+            self.assertEqual(both["cost"], first["cost"] + second["cost"])
+            rolled = api.build_range(cfg, "2024-01-01", "2024-01-02")
+            self.assertEqual(rolled["cost_eur"], first["cost"] + second["cost"])
 
 
 if __name__ == "__main__":

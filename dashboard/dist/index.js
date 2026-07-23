@@ -289,6 +289,9 @@
       stat("Tool calls", fmtNum(o.tool_calls)), stat("User msgs", fmtNum(o.user_messages)),
       stat("Total tokens", fmtNum(o.total_tokens)), stat("Active time", fmtMin(o.active_minutes)),
       stat("Avg session", (o.avg_session_min || 0) + "m"), stat("Msgs/sess", o.avg_msgs || 0));
+    var profiles = ins.included_profiles || [];
+    var profileNote = profiles.length ? h("div", { style: { fontSize: "0.72rem", color: MUTED, marginBottom: "0.7rem" } },
+      "Included telemetry profiles: " + profiles.join(", ") + ". Session telemetry may not include every worker run.") : null;
 
     var inTok = o.input_tokens || 0, outTok = o.output_tokens || 0, tot = Math.max(1, inTok + outTok);
     var tokenBar = h("div", { style: { marginBottom: "0.8rem" } },
@@ -327,10 +330,11 @@
         }));
     }
     var breakdown = h("div", { style: { display: "flex", flexWrap: "wrap", gap: "1.4rem", marginTop: "0.85rem" } },
-      hbars("Models \u00b7 tokens", ins.by_model, "model", "tokens", "tok", accent),
-      hbars("Platforms \u00b7 sessions", ins.by_platform, "platform", "sessions", "sess", "#3fb97d"));
+      hbars("Profiles · tokens", ins.by_profile, "profile", "tokens", "tok", "#3fb97d"),
+      hbars("Models · tokens", ins.by_model, "model", "tokens", "tok", accent),
+      hbars("Platforms · sessions", ins.by_platform, "platform", "sessions", "sess", "#d4b348"));
 
-    return h("div", null, stats, tokenBar, weekChart, breakdown);
+    return h("div", null, stats, profileNote, tokenBar, weekChart, breakdown);
   }
 
   function LearnedCards(props) {
@@ -623,7 +627,8 @@
       h(Section, { title: "Cost" },
         h(BudgetBar, { label: "Today", editable: true, field: "daily_eur", used: cost.today_eur, budget: cost.budget_daily, apiBase: props.apiBase, onSaved: props.onBudgetSaved }),
         h(BudgetBar, { label: "This month", editable: true, field: "monthly_eur", used: cost.month_eur, budget: cost.budget_monthly, apiBase: props.apiBase, onSaved: props.onBudgetSaved }),
-        h("div", { style: { fontSize: "0.76rem", color: MUTED } }, (cost.runs || 0) + " runs"),
+        h("div", { style: { fontSize: "0.76rem", color: MUTED } }, (cost.runs || 0) + " runs" + (cost.approx ? " · cost includes estimates" : " · actual session cost")),
+        (cost.included_profiles && cost.included_profiles.length) ? h("div", { style: { fontSize: "0.74rem", color: MUTED, marginTop: "0.2rem" } }, "Profiles: " + cost.included_profiles.join(", ")) : null,
         cost.caveat ? h("div", { style: { fontSize: "0.74rem", color: MUTED, marginTop: "0.2rem" } }, "⚠ " + cost.caveat) : null),
       (digest.models && digest.models.total_runs)
         ? h(Section, { title: "Models · " + (digest.models.by_profile.length) + " profiles", defaultCollapsed: true }, h(ModelsTable, { models: digest.models }))
