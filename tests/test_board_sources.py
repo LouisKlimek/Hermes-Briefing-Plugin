@@ -39,6 +39,22 @@ def make_board(path: Path, task_id: str, ts: int) -> None:
             "INSERT INTO task_events VALUES (1, ?, 'completed', '{}', ?)",
             (task_id, ts),
         )
+
+
+def add_runs(path: Path, rows: list[tuple]) -> None:
+    with sqlite3.connect(path) as conn:
+        conn.execute("""
+            CREATE TABLE task_runs (
+                id INTEGER PRIMARY KEY, task_id TEXT, profile TEXT, started_at INTEGER,
+                ended_at INTEGER, model TEXT
+            )
+        """)
+        conn.executemany(
+            "INSERT INTO task_runs (task_id, profile, started_at, ended_at, model) VALUES (?, ?, ?, ?, ?)",
+            rows,
+        )
+
+
 def make_tasklist_db(path: Path, board: str, task_id: str, list_name: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(path) as conn:
@@ -569,6 +585,39 @@ class BoardSourceTests(unittest.TestCase):
             self.assertEqual(digest["cost"]["today_eur"], 2.25)
             self.assertTrue(insights["cost_approximate"])
             self.assertEqual(next(row for row in insights["by_profile"] if row["profile"] == "no-db")["sessions"], 0)
+
+    def test_profile_usage_uses_windowed_telemetry_models_and_labels_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "profiles"
+            home = root / "dashboard"
+            worker = root / "worker"
+            start, end, _ = api.day_bounds("2024-01-02", "UTC")
+            make_board(home / "kanban.db", "day-task", start)
+            add_runs(home / "kanban.db", [
+                ("day-task", "worker", start, start + 90, None),
+                ("day-task", "missing", start, start + 30, None),
+            ])
+            make_state_db(worker / "state.db", [
+                (start, "historic-model", 10, 5, 0, 0, 0.1),
+                (end, "future-model", 10, 5, 0, 0, 0.1),
+            ])
+            cfg = api.Config(hermes_home=home, timezone="UTC")
+
+            daily = api.build_digest(cfg, "2024-01-02", persist=False, mark=False)
+            weekly = api.build_range(cfg, "2024-01-02", "2024-01-02")
+            monthly = api.build_range(cfg, "2024-01-01", "2024-01-31")
+
+        for report in (daily, weekly):
+            rows = {row["profile"]: row for row in report["models"]["by_profile"]}
+            self.assertEqual(rows["worker"]["model"], "historic-model")
+            self.assertNotIn("future-model", rows["worker"]["model"])
+            self.assertIsNone(rows["missing"].get("model"))
+            self.assertEqual(rows["worker"]["dur_sum"], 90.0)
+        monthly_rows = {row["profile"]: row for row in monthly["models"]["by_profile"]}
+        self.assertEqual(monthly_rows["worker"]["model"], "future-model, historic-model")
+        bundle = (Path(__file__).parents[1] / "dashboard" / "dist" / "index.js").read_text()
+        self.assertIn('["Avg Run Time", "right"]', bundle)
+        self.assertNotIn('"\\u00d8 Latency"', bundle)
 
     def test_default_telemetry_discovery_is_direct_only_and_preserves_standalone_homes(self):
         with tempfile.TemporaryDirectory() as tmp:

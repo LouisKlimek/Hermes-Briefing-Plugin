@@ -635,11 +635,14 @@ def _find_list(d: dict, keys) -> list:
     return []
 
 
-def build_models(runs: list[dict], pmeta: dict | None = None) -> dict:
+def build_models(runs: list[dict], pmeta: dict | None = None,
+                 telemetry_models: dict[str, list[str]] | None = None) -> dict:
     """Aggregate normalized runs into per-profile and per-model usage stats.
     Returns raw sums so週/Monat roll-ups can merge cheaply; the UI finalizes
-    averages. Fills model/thinking from profile config when runs omit them."""
+    averages. Model attribution comes only from the historical run or telemetry
+    window; current profile configuration is used only for thinking metadata."""
     pmeta = pmeta or {}
+    telemetry_models = telemetry_models or {}
 
     def blank():
         return {"runs": 0, "in_tok": 0, "out_tok": 0, "cost": 0.0,
@@ -652,7 +655,10 @@ def build_models(runs: list[dict], pmeta: dict | None = None) -> dict:
     for r in runs:
         prof = r.get("profile") or "unknown"
         pm = pmeta.get(_canon(prof), {})
-        model = r.get("model") or pm.get("model")
+        model = r.get("model")
+        if not model:
+            models = telemetry_models.get(_canon(prof), [])
+            model = ", ".join(models) if models else None
         thinking = r.get("thinking")
         if thinking in (None, "") and pm.get("thinking") is not None:
             thinking = pm.get("thinking")
@@ -2657,7 +2663,8 @@ def build_insights(cfg: Config, start_ts: int, end_ts: int) -> dict:
     seen_session_ids: set[str] = set()
     for profile, db in source_meta["sources"]:
         bucket = profiles.setdefault(profile, {"profile": profile, "sessions": 0, "input_tokens": 0,
-            "output_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0, "tokens": 0})
+            "output_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0, "tokens": 0,
+            "models": set()})
         if not db.exists():
             source_meta["skipped_sources"].append({"profile": profile, "reason": "state.db missing"})
             continue
@@ -2700,6 +2707,8 @@ def build_insights(cfg: Config, start_ts: int, end_ts: int) -> dict:
                     bucket[name] += value
                 bucket["tokens"] += row_tokens
                 model = str(row["model"] or "?") if "model" in cols else "?"
+                if model != "?":
+                    bucket["models"].add(model)
                 model_bucket = models.setdefault(model, {"model": model, "sessions": 0, "tokens": 0})
                 model_bucket["sessions"] += 1
                 model_bucket["tokens"] += row_tokens
@@ -2723,9 +2732,13 @@ def build_insights(cfg: Config, start_ts: int, end_ts: int) -> dict:
     totals["estimated_cost"] = round(estimated_cost, 6)
     totals["cost_approximate"] = bool(estimated_rows)
     totals["estimated_sessions"] = estimated_rows
+    profile_rows = []
+    for bucket in profiles.values():
+        bucket["models"] = sorted(bucket["models"])
+        profile_rows.append(bucket)
     return {"available": bool(totals["sessions"]), "overview": totals,
             "by_model": sorted(models.values(), key=lambda row: row["tokens"], reverse=True),
-            "by_profile": sorted(profiles.values(), key=lambda row: row["profile"]),
+            "by_profile": sorted(profile_rows, key=lambda row: row["profile"]),
             "included_profiles": source_meta["included_profiles"],
             "telemetry_sources": {key: value for key, value in source_meta.items() if key != "sources"},
             "cost": totals["cost"], "cost_approximate": bool(estimated_rows),
@@ -2895,7 +2908,9 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = 
         # 7) model / profile usage (latency, tokens, thinking) for model selection
         pmeta = profile_meta(cfg)
         runs_window = src.fetch_runs_window(start_ts, end_ts)
-        models = build_models(runs_window, pmeta)
+        telemetry_models = {_canon(row["profile"]): row.get("models", [])
+                            for row in insights.get("by_profile", [])}
+        models = build_models(runs_window, pmeta, telemetry_models)
 
         # 8) Part-1 overview + 12-point verification layer
         overview = build_overview(cfg, date_str, board, events, view_tasks, runs_window,
@@ -3054,8 +3069,10 @@ def build_range(cfg: Config, from_date: str, to_date: str, board: str = "all") -
     try:
         rstart, _, _ = day_bounds(from_date, cfg.timezone)
         _, rend, _ = day_bounds(to_date, cfg.timezone)
-        range_models = build_models(src.fetch_runs_window(rstart, rend), profile_meta(cfg))
         range_insights = build_insights(cfg, rstart, rend)
+        telemetry_models = {_canon(row["profile"]): row.get("models", [])
+                            for row in range_insights.get("by_profile", [])}
+        range_models = build_models(src.fetch_runs_window(rstart, rend), profile_meta(cfg), telemetry_models)
         range_human_sessions = human_chat_sessions(cfg, rstart, rend)
     except Exception:
         range_models = {"by_profile": [], "by_model": [], "available": {}, "total_runs": 0}

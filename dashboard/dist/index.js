@@ -393,7 +393,7 @@
     var m = props.models || {}, rows = m.by_profile || [], av = m.available || {};
     if (!rows.length) return h("div", { style: { fontSize: "0.82rem", color: MUTED } }, "No run/timing data found for this range.");
     var headers = [["Profile", "left"], ["Model", "left"], ["Runs", "right"]];
-    if (av.latency) headers.push(["\u00d8 Latency", "right"]);
+    if (av.latency) headers.push(["Avg Run Time", "right"]);
     if (av.tokens) headers.push(["Tokens", "right"]);
     if (av.thinking) headers.push(["Thinking", "right"]);
     if (av.cost) headers.push(["Cost", "right"]);
