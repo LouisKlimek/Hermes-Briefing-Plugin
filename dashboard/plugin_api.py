@@ -2549,25 +2549,61 @@ def _build_insights_single(cfg: Config, start_ts: int, end_ts: int) -> dict:
             pass
 
 
-def telemetry_sources(cfg: Config) -> list[tuple[str, Path]]:
-    """Return each explicitly allowed profile state DB once, without discovery outside configured roots."""
+# `id` is intentionally excluded: SQLite primary keys are local to each state.db.
+_GLOBAL_SESSION_ID_COLUMNS = ("session_id", "session_uuid", "uuid")
+
+
+def _canonical_path(path: Path) -> Path:
+    try:
+        return path.expanduser().resolve(strict=False)
+    except OSError:
+        return path.expanduser().absolute()
+
+
+def telemetry_source_metadata(cfg: Config) -> dict[str, Any]:
+    """Discover direct sibling profile DBs and canonicalize additive sources.
+
+    The only implicit boundary is the parent of the normalized active home;
+    discovery never recurses beyond that directory's immediate children.
+    """
+    home = _canonical_path(cfg.hermes_home)
     candidates = [(cfg.hermes_home.name or "dashboard", cfg.hermes_home / "state.db")]
+    try:
+        candidates.extend(
+            (child.name, child / "state.db")
+            for child in home.parent.iterdir()
+            if child.is_dir() and (child / "state.db").exists()
+        )
+    except OSError:
+        pass
     for root in cfg.telemetry_profile_roots:
         try:
             candidates.extend((child.name, child / "state.db") for child in root.iterdir() if child.is_dir())
         except OSError:
             pass
     candidates.extend((db.parent.name or "profile", db) for db in cfg.telemetry_profile_dbs)
-    seen, out = set(), []
+
+    seen: set[Path] = set()
+    sources: list[tuple[str, Path]] = []
+    path_duplicates = 0
     for profile, db in candidates:
-        try:
-            key = db.resolve(strict=False)
-        except OSError:
-            key = db.absolute()
-        if key not in seen:
-            seen.add(key)
-            out.append((profile, db))
-    return out
+        key = _canonical_path(db)
+        if key in seen:
+            path_duplicates += 1
+            continue
+        seen.add(key)
+        sources.append((profile, db))
+    return {"sources": sources, "included_profiles": [profile for profile, _ in sources],
+            "source_count": len(sources), "path_duplicates_skipped": path_duplicates,
+            "skipped_sources": [],
+            "deduplication": {"mode": "stable-global-session-id-only",
+                                "deduplicated_sessions": 0,
+                                "sources_without_safe_session_id": []}}
+
+
+def telemetry_sources(cfg: Config) -> list[tuple[str, Path]]:
+    """Return each default or explicitly allowed profile state DB once."""
+    return telemetry_source_metadata(cfg)["sources"]
 
 
 _KANBAN_WORKER_SESSION_TITLE = re.compile(r"^work kanban task t_[0-9a-f]+$", re.IGNORECASE)
@@ -2609,18 +2645,21 @@ def human_chat_sessions(cfg: Config, start_ts: int, end_ts: int) -> list[dict]:
 
 
 def build_insights(cfg: Config, start_ts: int, end_ts: int) -> dict:
-    """Aggregate exact-window, read-only session telemetry from allowed profiles only."""
+    """Aggregate exact-window, read-only session metadata from profile DBs."""
     import sqlite3
     profiles, models = {}, {}
+    source_meta = telemetry_source_metadata(cfg)
     totals: dict[str, Any] = {"sessions": 0, "input_tokens": 0, "output_tokens": 0,
               "cache_read_tokens": 0, "cache_write_tokens": 0}
     actual_cost = 0.0
     estimated_cost = 0.0
     estimated_rows = 0
-    for profile, db in telemetry_sources(cfg):
+    seen_session_ids: set[str] = set()
+    for profile, db in source_meta["sources"]:
         bucket = profiles.setdefault(profile, {"profile": profile, "sessions": 0, "input_tokens": 0,
             "output_tokens": 0, "cache_read_tokens": 0, "cache_write_tokens": 0, "tokens": 0})
         if not db.exists():
+            source_meta["skipped_sources"].append({"profile": profile, "reason": "state.db missing"})
             continue
         conn = None
         try:
@@ -2628,6 +2667,7 @@ def build_insights(cfg: Config, start_ts: int, end_ts: int) -> dict:
             conn.row_factory = sqlite3.Row
             cols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)")}
             if "started_at" not in cols:
+                source_meta["skipped_sources"].append({"profile": profile, "reason": "sessions schema unsupported"})
                 continue
             token_cols = [c for c in ("input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens") if c in cols]
             selected = ["started_at"] + token_cols
@@ -2636,10 +2676,21 @@ def build_insights(cfg: Config, start_ts: int, end_ts: int) -> dict:
             cost_col = next((c for c in ("actual_cost", "cost_usd", "cost_eur", "cost") if c in cols), None)
             if cost_col:
                 selected.append(cost_col)
+            session_id_col = next((c for c in _GLOBAL_SESSION_ID_COLUMNS if c in cols), None)
+            if session_id_col:
+                selected.append(session_id_col)
+            else:
+                source_meta["deduplication"]["sources_without_safe_session_id"].append(profile)
             quoted = ", ".join('"' + col + '"' for col in selected)
             rows = conn.execute(f"SELECT {quoted} FROM sessions WHERE started_at >= ? AND started_at < ?",
                                 (start_ts, end_ts)).fetchall()
             for row in rows:
+                session_id = str(row[session_id_col] or "") if session_id_col else ""
+                if session_id and session_id in seen_session_ids:
+                    source_meta["deduplication"]["deduplicated_sessions"] += 1
+                    continue
+                if session_id:
+                    seen_session_ids.add(session_id)
                 values = {name: int(row[name] or 0) for name in token_cols}
                 row_tokens = sum(values.values())
                 totals["sessions"] += 1
@@ -2662,7 +2713,7 @@ def build_insights(cfg: Config, start_ts: int, end_ts: int) -> dict:
                                      by_model={model: row_tokens})
                     estimated_cost += estimate_cost_eur(estimate, cfg)
         except (OSError, sqlite3.Error, ValueError, TypeError):
-            pass
+            source_meta["skipped_sources"].append({"profile": profile, "reason": "state.db unreadable or malformed"})
         finally:
             if conn:
                 conn.close()
@@ -2675,7 +2726,8 @@ def build_insights(cfg: Config, start_ts: int, end_ts: int) -> dict:
     return {"available": bool(totals["sessions"]), "overview": totals,
             "by_model": sorted(models.values(), key=lambda row: row["tokens"], reverse=True),
             "by_profile": sorted(profiles.values(), key=lambda row: row["profile"]),
-            "included_profiles": [profile for profile, _ in telemetry_sources(cfg)],
+            "included_profiles": source_meta["included_profiles"],
+            "telemetry_sources": {key: value for key, value in source_meta.items() if key != "sources"},
             "cost": totals["cost"], "cost_approximate": bool(estimated_rows),
             "source": "state.db session telemetry (exact window)",
             "caveat": "Session telemetry may not include every worker run."}
@@ -2824,6 +2876,7 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = 
             "source": insights.get("source"), "caveat": insights.get("caveat"),
             "approx": today_approx, "month_approx": month_approx,
             "included_profiles": insights.get("included_profiles", []),
+            "telemetry_sources": insights.get("telemetry_sources", {}),
         }
 
         # 5) system health from error events
@@ -3032,6 +3085,7 @@ def build_range(cfg: Config, from_date: str, to_date: str, board: str = "all") -
             "generated_at": int(time.time()),
             "cost_eur": round(cost_sum, 2), "cost_approx": cost_approx,
             "included_profiles": range_insights.get("included_profiles", []),
+            "telemetry_sources": range_insights.get("telemetry_sources", {}),
             "done": done, "hand": hand_open,
             "budget_daily": limits["daily_eur"], "budget_monthly": limits["monthly_eur"],
             "num_days": len(days),

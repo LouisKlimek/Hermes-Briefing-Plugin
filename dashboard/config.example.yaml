@@ -14,9 +14,11 @@ language: en            # en | de
 # external_board_dbs:
 #   - /srv/approved-boards/operations/kanban.db
 
-# Optional, explicit read-only session telemetry across configured Hermes profiles.
-# Each root contains <profile>/state.db; individual DBs form an allowlist.
-# Without these settings, Briefing reads only its own <hermes_home>/state.db.
+# Briefing automatically reads direct sibling profile state.db files when its active
+# home is <profiles>/<active-profile>. It never recurses beyond those siblings.
+# Optional roots and DBs below are additive read-only telemetry sources. Canonical
+# paths (including symlinks) are read once; only recognized global session IDs are
+# cross-DB deduplicated, and skipped sources are reported in API diagnostics.
 # REPORTS_TELEMETRY_PROFILE_ROOTS and REPORTS_TELEMETRY_PROFILE_DBS accept the
 # same paths separated by the platform path separator.
 # telemetry_profile_roots:
