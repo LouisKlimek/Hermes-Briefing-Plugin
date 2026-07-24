@@ -56,6 +56,31 @@
 .brf-card { transition: transform .15s ease, box-shadow .15s ease; }
 .brf-card:hover { transform: translateY(-1px); }
 
+/* Human chat session controls: compact, uniform buttons with a reliable hit target. */
+.brf-session-action {
+  display: inline-grid;
+  place-items: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  flex: 0 0 1.75rem;
+  border: 1px solid transparent;
+  border-radius: .4rem;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+.brf-session-action:hover,
+.brf-session-action:focus-visible {
+  border-color: var(--color-border);
+  background: var(--color-muted, rgba(127,127,127,.1));
+}
+.brf-session-action:focus-visible { outline: 2px solid var(--color-ring, currentColor); outline-offset: 2px; }
+.brf-session-disclosure { font-size: 1.35rem; }
+.brf-session-action-danger { color: #d14a4a; }
+
 /* Keep the desktop history/report split, but let report content shrink and wrap. */
 .brf-day-layout { display: flex; gap: .5rem; min-width: 0; }
 .brf-day-sidebar {
