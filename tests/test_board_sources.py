@@ -160,6 +160,7 @@ class BoardSourceTests(unittest.TestCase):
         self.assertEqual(daily["human_chat_sessions"][0]["title"], "Normal chat")
         self.assertEqual(weekly["human_chat_sessions"][0]["title"], "Normal chat")
         bundle = (Path(__file__).parents[1] / "dashboard" / "dist" / "index.js").read_text()
+        stylesheet = (Path(__file__).parents[1] / "dashboard" / "dist" / "style.css").read_text()
         daily_view = bundle[bundle.index("function DigestView"):bundle.index("function RangeView")]
         range_view = bundle[bundle.index("function RangeView"):bundle.index("function StatusBar")]
         self.assertIn('function HumanChatSessions', bundle)
@@ -170,6 +171,14 @@ class BoardSourceTests(unittest.TestCase):
         self.assertIn('method: "PATCH"', bundle)
         self.assertIn('method: "DELETE"', bundle)
         self.assertIn('No context handoff is available for this session.', bundle)
+        self.assertIn('className: "brf-session-action brf-session-disclosure"', bundle)
+        self.assertIn('className: "brf-session-action brf-session-action-danger"', bundle)
+        self.assertIn('"aria-label": "Rename session"', bundle)
+        self.assertIn('"aria-label": "Export session as JSON"', bundle)
+        self.assertIn('"aria-label": "Delete session"', bundle)
+        self.assertIn('.brf-session-action {', stylesheet)
+        self.assertIn('width: 1.75rem;', stylesheet)
+        self.assertIn('.brf-session-action:focus-visible', stylesheet)
         self.assertIn('h(HumanChatSessions, { sessions: digest.human_chat_sessions })', daily_view)
         self.assertIn('h(HumanChatSessions, { sessions: r.human_chat_sessions })', range_view)
     def test_report_embeds_the_grouped_task_view_without_a_tasks_tab(self):
