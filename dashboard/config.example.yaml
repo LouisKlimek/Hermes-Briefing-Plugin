@@ -26,6 +26,18 @@ language: en            # en | de
 # telemetry_profile_dbs:
 #   - /srv/approved-profiles/worker/state.db
 
+# Learning event ledger. Briefing automatically ingests successful structured JSONL
+# lifecycle records from its own `<reports_dir>/learning-events.jsonl` whenever a
+# digest/range is built; the systemd timer/cron therefore ingests in the background.
+# Extra files must be explicitly allowlisted (no recursive profile/host scans).
+# Each line contains only: event_id, timestamp, event_type (skill_created,
+# skill_updated, soul_updated, lesson_recorded), actor_profile, target_profile,
+# artifact_id, source, provenance, reconstructed, success. A Lesson is only an
+# explicit successful `lesson_recorded` operation, never a keyword/comment match.
+# Prompt/session text, credentials, tokens, and secrets are rejected and never stored.
+# learning_event_sources:
+#   - /srv/approved-hermes-operation-metadata.jsonl
+
 # TaskList membership is read from <hermes_home>/tasklist/lists.db when the
 # plugin is installed. Set this only when that read-only DB lives elsewhere.
 # Missing or incompatible TaskList DBs render tasks as "No List".

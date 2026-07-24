@@ -214,6 +214,8 @@ Mounted at `/api/plugins/briefing/`:
 | `/budget-limits` | GET / POST | read or save non-negative daily/monthly EUR limits in Briefing's own SQLite database |
 | `/build` | POST | background build — `{"days":N}` bootstraps, `{"date":"…"}` rebuilds one day |
 | `/range?from_=&to=` | GET | weekly/monthly roll-up |
+| `/learning-events?from_ts=&to_ts=` | GET | exact `[from_ts,to_ts)` structured learning-event view |
+| `/learning-events` | POST | append one successful structured learning lifecycle record |
 | `/decisions` | GET | open "needs your hand" items |
 | `/decisions/{id}/resolve` | POST/GET | resolve a decision; GET form `?resolution=ok\|veto` for reliability |
 
@@ -224,7 +226,7 @@ Like all Hermes plugin routes, these bypass session auth because the dashboard b
 ## Caveats worth knowing
 
 - **Cost source.** `hermes insights` is keyed on sessions; it reliably counts interactive surfaces (tui/gateway) but may not capture autonomous dispatcher worker runs. The briefing flags this. If your runs table carries token/cost columns, Briefing auto-detects and prefers them for a true per-run figure.
-- **"Notiert" is light.** It surfaces short comment lines tagged `notiert:` / `gelernt:` / `learned:`. For richer learnings, have your orchestrator emit them as tagged comments.
+- **Learning ledger.** Skill/SOUL and Lesson counters are derived only from Briefing's append-only, idempotent event ledger. A Lesson is an explicit successful `lesson_recorded` lifecycle operation; Kanban comment keywords are not evidence. Digest builds (including the bundled timer/cron) ingest the plugin-owned `learning-events.jsonl` source automatically; additional retained operation-metadata files must be explicitly allowlisted. Each row retains only event ID, timestamp, type, profile/artifact identifiers, source, capture quality, and provenance; prompts, sessions, credentials, tokens, and secrets are neither ingested nor stored. Reconstructed retained-history rows are explicitly marked `reconstructed`; unavailable historical sources remain unavailable rather than becoming a verified zero.
 - **Configured sources only.** By default discovery stays profile-local. To aggregate boards outside a profile, explicitly configure `external_board_roots` and/or `external_board_dbs`; Briefing opens every source SQLite database with `mode=ro` and never writes to a Kanban database. `kanban_db` remains a deliberately single-board override.
 
 ---
