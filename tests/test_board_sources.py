@@ -1,4 +1,5 @@
 import importlib.util
+import json
 import sqlite3
 import sys
 import tempfile
@@ -745,6 +746,55 @@ class BoardSourceTests(unittest.TestCase):
             self.assertEqual(both["cost"], first["cost"] + second["cost"])
             rolled = api.build_range(cfg, "2024-01-01", "2024-01-02")
             self.assertEqual(rolled["cost_eur"], first["cost"] + second["cost"])
+
+    def test_learning_ledger_accepts_only_successful_events_idempotently(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = api.Config(hermes_home=Path(tmp) / "profile", timezone="UTC")
+            store = api.Store(cfg)
+            event = {"event_id": "evt-1", "timestamp": 100, "event_type": "skill_created",
+                     "actor_profile": "agent", "target_profile": "agent", "artifact_id": "skill/demo",
+                     "source": "tool-lifecycle", "provenance": "agent", "success": True}
+            self.assertTrue(store.record_learning_event(event))
+            self.assertFalse(store.record_learning_event(event))
+            failed = {**event, "event_id": "evt-failed", "success": False}
+            self.assertFalse(store.record_learning_event(failed))
+            self.assertEqual([row["event_id"] for row in store.learning_events(0, 101)], ["evt-1"])
+            store.close()
+
+    def test_learning_ledger_marks_reconstruction_and_rejects_secrets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = api.Store(api.Config(hermes_home=Path(tmp) / "profile"))
+            reconstructed = {"event_id": "evt-history", "timestamp": 100, "event_type": "soul_updated",
+                             "artifact_id": "SOUL.md", "source": "git-history", "provenance": "system",
+                             "reconstructed": True}
+            self.assertTrue(store.record_learning_event(reconstructed))
+            row = store.learning_events(100, 101)[0]
+            self.assertEqual((row["capture_quality"], row["provenance"], row["reconstructed"]),
+                             ("reconstructed", "system", 1))
+            with self.assertRaises(ValueError):
+                store.record_learning_event({**reconstructed, "event_id": "evt-secret",
+                                            "artifact_id": "token=not-allowed"})
+            store.close()
+
+    def test_learning_jsonl_uses_exact_window_and_not_kanban_comment_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "profile"
+            start, end, _ = api.day_bounds("2024-01-02", "UTC")
+            make_board(home / "kanban.db", "task", start)
+            source = Path(tmp) / "ops.jsonl"
+            rows = [
+                {"event_id": "before", "timestamp": start - 1, "event_type": "lesson_recorded", "artifact_id": "before", "source": "hook", "success": True},
+                {"event_id": "at-start", "timestamp": start, "event_type": "lesson_recorded", "artifact_id": "durable-lesson", "source": "hook", "provenance": "human", "success": True},
+                {"event_id": "at-end", "timestamp": end, "event_type": "skill_updated", "artifact_id": "skill/x", "source": "hook", "success": True},
+            ]
+            source.write_text("\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8")
+            cfg = api.Config(hermes_home=home, timezone="UTC", learning_event_sources=[source])
+            digest = api.build_digest(cfg, "2024-01-02", persist=False, mark=False)
+            rolled = api.build_range(cfg, "2024-01-02", "2024-01-02")
+            self.assertEqual([event["event_id"] for event in digest["learning_events"]], ["at-start"])
+            self.assertEqual(digest["overview"]["counters"], {"lessons": 1, "skill_soul": 0})
+            self.assertEqual([event["event_id"] for event in rolled["learning_events"]], ["at-start"])
+            self.assertTrue(any(item["available"] for item in digest["learning_ingestion"]["sources"]))
 
 
 if __name__ == "__main__":

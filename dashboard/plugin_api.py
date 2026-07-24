@@ -146,6 +146,10 @@ class Config:
     # either option, only this dashboard profile's state.db is read.
     telemetry_profile_roots: list[Path] = field(default_factory=list)
     telemetry_profile_dbs: list[Path] = field(default_factory=list)
+    # Structured learning-operation records are accepted only from these explicit
+    # plugin-owned or allowlisted JSONL files. No comments, prompts, session text,
+    # file mtimes, or recursive host scans are used as learning-event evidence.
+    learning_event_sources: list[Path] = field(default_factory=list)
     reports_dir: Path | None = None        # default: <hermes_home>/reports
     timezone: str = "Europe/Berlin"
     language: str = "en"          # "en" | "de"
@@ -179,6 +183,9 @@ class Config:
     def reports_db(self) -> Path:
         return self.resolved_reports_dir() / "briefing.db"
 
+    def resolved_learning_event_sources(self) -> list[Path]:
+        return [self.resolved_reports_dir() / "learning-events.jsonl", *self.learning_event_sources]
+
 
 def _path_list(value: Any) -> list[Path]:
     """Normalize a YAML/env source list without accepting implicit locations."""
@@ -199,6 +206,8 @@ def _apply_yaml(cfg: Config, data: dict[str, Any]) -> None:
         cfg.telemetry_profile_roots = _path_list(data["telemetry_profile_roots"])
     if "telemetry_profile_dbs" in data:
         cfg.telemetry_profile_dbs = _path_list(data["telemetry_profile_dbs"])
+    if "learning_event_sources" in data:
+        cfg.learning_event_sources = _path_list(data["learning_event_sources"])
     if isinstance(data.get("schedule"), list):
         cfg.schedule = [str(s) for s in data["schedule"]]
     elif data.get("schedule"):
@@ -235,6 +244,8 @@ def _apply_env(cfg: Config) -> None:
         cfg.telemetry_profile_roots = _path_list(roots.split(os.pathsep))
     if dbs := e("REPORTS_TELEMETRY_PROFILE_DBS"):
         cfg.telemetry_profile_dbs = _path_list(dbs.split(os.pathsep))
+    if sources := e("REPORTS_LEARNING_EVENT_SOURCES"):
+        cfg.learning_event_sources = _path_list(sources.split(os.pathsep))
     if e("REPORTS_DIR"):             cfg.reports_dir = e("REPORTS_DIR")
     if e("REPORTS_TIMEZONE"):        cfg.timezone = e("REPORTS_TIMEZONE")
     if e("REPORTS_LANGUAGE"):        cfg.language = e("REPORTS_LANGUAGE")
@@ -1564,6 +1575,20 @@ CREATE TABLE IF NOT EXISTS budget_limits (
     monthly_eur  REAL NOT NULL CHECK (monthly_eur >= 0),
     updated_at   INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS learning_events (
+    event_id        TEXT PRIMARY KEY,
+    timestamp       INTEGER NOT NULL,
+    event_type      TEXT NOT NULL CHECK (event_type IN ('skill_created','skill_updated','soul_updated','lesson_recorded')),
+    actor_profile   TEXT,
+    target_profile  TEXT,
+    artifact_id     TEXT NOT NULL,
+    source          TEXT NOT NULL,
+    capture_quality TEXT NOT NULL CHECK (capture_quality IN ('direct','reconstructed')),
+    provenance      TEXT NOT NULL CHECK (provenance IN ('agent','human','system','unknown')),
+    reconstructed   INTEGER NOT NULL DEFAULT 0 CHECK (reconstructed IN (0,1)),
+    source_key      TEXT UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_learning_events_window ON learning_events(timestamp);
 """
 
 
@@ -1624,6 +1649,68 @@ class Store:
         )
         self.conn.commit()
         return self.get_budget_limits()
+
+    # -- learning ledger -------------------------------------------------
+    _LEARNING_TYPES = {"skill_created", "skill_updated", "soul_updated", "lesson_recorded"}
+    _PROVENANCE = {"agent", "human", "system", "unknown"}
+    _SECRET_RE = re.compile(r"(?i)(api[_-]?key|token|secret|password|authorization)\s*[:=]")
+
+    @classmethod
+    def _learning_text(cls, value: Any, name: str, maximum: int = 255) -> str:
+        if not isinstance(value, str):
+            raise ValueError(f"{name} must be a string")
+        value = value.strip()
+        if not value or len(value) > maximum or cls._SECRET_RE.search(value):
+            raise ValueError(f"{name} is missing, too long, or contains sensitive data")
+        return value
+
+    def record_learning_event(self, data: dict, *, source_key: str | None = None) -> bool:
+        """Append one successful minimal operation record, idempotently.
+
+        A Lesson means an explicit durable `lesson_recorded` operation; comments
+        and keyword matches are never considered Lessons. Unsuccessful records
+        (`success: false`) are deliberately ignored.
+        """
+        if not isinstance(data, dict) or data.get("success") is False:
+            return False
+        event_type = str(data.get("event_type", "")).strip()
+        if event_type not in self._LEARNING_TYPES:
+            raise ValueError("unsupported learning event type")
+        event_id = self._learning_text(data.get("event_id", ""), "event_id")
+        artifact_id = self._learning_text(data.get("artifact_id", ""), "artifact_id")
+        source = self._learning_text(data.get("source", ""), "source")
+        try:
+            timestamp = int(data.get("timestamp"))
+        except (TypeError, ValueError):
+            raise ValueError("timestamp must be an integer") from None
+        reconstructed = bool(data.get("reconstructed", False))
+        provenance = str(data.get("provenance") or "unknown").lower()
+        if provenance not in self._PROVENANCE:
+            provenance = "unknown"
+        actor = str(data.get("actor_profile") or "").strip()[:120] or None
+        target = str(data.get("target_profile") or "").strip()[:120] or None
+        if any(self._SECRET_RE.search(x or "") for x in (actor, target)):
+            raise ValueError("profile metadata contains sensitive data")
+        before = self.conn.total_changes
+        self.conn.execute(
+            """INSERT OR IGNORE INTO learning_events
+               (event_id,timestamp,event_type,actor_profile,target_profile,artifact_id,
+                source,capture_quality,provenance,reconstructed,source_key)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (event_id, timestamp, event_type, actor, target, artifact_id, source,
+             "reconstructed" if reconstructed else "direct", provenance,
+             int(reconstructed), source_key or event_id),
+        )
+        self.conn.commit()
+        return self.conn.total_changes > before
+
+    def learning_events(self, start_ts: int, end_ts: int) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT event_id,timestamp,event_type,actor_profile,target_profile,artifact_id,"
+            "source,capture_quality,provenance,reconstructed FROM learning_events "
+            "WHERE timestamp>=? AND timestamp<? ORDER BY timestamp,event_id", (start_ts, end_ts)
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     # -- summaries -------------------------------------------------------
 
@@ -2256,12 +2343,11 @@ def build_overview(cfg: Config, date_str: str, board: str, events: list, tasks: 
             if t and not t.assignee:
                 team_new += 1; team_unrouted += 1
 
-    # skill/SOUL change counter (best-effort: events/comments mentioning skill or soul edits)
-    skill_soul = 0
-    for e in events:
-        blob = (_canon(e.kind) + " " + _any_text(e.data or {}).lower())
-        if ("skill" in blob or "soul" in blob) and any(w in blob for w in ("edit", "change", "diff", "update", "freigab", "gate", "modif")):
-            skill_soul += 1
+    # Learning counts are ledger-backed, never inferred from Kanban text, comments,
+    # timestamps, or filesystem mutations. `_learning_events` is private wiring
+    # from build_digest and is removed before profile metadata is used below.
+    learning_events = pmeta.pop("_learning_events", [])
+    skill_soul = sum(e["event_type"] != "lesson_recorded" for e in learning_events)
 
     # next priority per board (top ready/todo by priority)
     nexts = []
@@ -2287,7 +2373,8 @@ def build_overview(cfg: Config, date_str: str, board: str, events: list, tasks: 
         "board_lights": lights,
         "kpis": {"done": len(done_ids), "new": new_total, "blocked": blocked_now_total,
                  "active_profiles": len(profs)},
-        "counters": {"lessons": len(learned), "skill_soul": skill_soul},
+        "counters": {"lessons": sum(e["event_type"] == "lesson_recorded" for e in learning_events),
+                     "skill_soul": skill_soul},
         "team_input": {"new": team_new, "unrouted": team_unrouted},
         "next_priorities": nexts,
     }
@@ -2761,6 +2848,8 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = 
         store.build_begin(f"Building briefing for {date_str}", 1)
     try:
         store.expire_due()
+        learning_ingestion = ingest_learning_events(store, cfg)
+        learning_events = store.learning_events(start_ts, end_ts)
         events = src.fetch_events(start_ts, end_ts)
         # The live task snapshot is authoritative for a fresh briefing. Event
         # history can outlive a deleted card, and archived cards must not revive
@@ -2902,8 +2991,11 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = 
             notes = [f"{n}× {k}" for k, n in by_kind.items()]
         system = {"stable": not err, "notes": notes, "insights": insights}
 
-        # 6) learned (optional, lightweight: pull short comment lines tagged as notes)
-        learned = _extract_learned(src, events, tasks)
+        # 6) A Lesson is an explicit durable ledger operation. Views expose only
+        # the artifact identifier and provenance, never source prompt/comment text.
+        learned = [{"text": e["artifact_id"], "event_id": e["event_id"],
+                    "provenance": e["provenance"], "reconstructed": bool(e["reconstructed"])}
+                   for e in learning_events if e["event_type"] == "lesson_recorded"]
 
         # 7) model / profile usage (latency, tokens, thinking) for model selection
         pmeta = profile_meta(cfg)
@@ -2913,8 +3005,10 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = 
         models = build_models(runs_window, pmeta, telemetry_models)
 
         # 8) Part-1 overview + 12-point verification layer
+        overview_meta = dict(pmeta)
+        overview_meta["_learning_events"] = learning_events
         overview = build_overview(cfg, date_str, board, events, view_tasks, runs_window,
-                                  hand, learned, cost, src.board_slugs(), start_ts, end_ts, pmeta)
+                                  hand, learned, cost, src.board_slugs(), start_ts, end_ts, overview_meta)
         verification = run_verification(cfg, date_str, src, events, view_tasks, pmeta,
                                         runs_window, hand, cost, system)
 
@@ -2927,6 +3021,7 @@ def build_digest(cfg: Config, date_str: str, persist: bool = True, mark: bool = 
                        "cost_eur": round(today_eur, 2), "budget_eur": limits["daily_eur"]},
             "hand": [_decision_view(d) for d in hand],
             "in_progress": in_progress, "done": done, "learned": learned,
+            "learning_events": learning_events, "learning_ingestion": learning_ingestion,
             "human_chat_sessions": human_sessions,
             "models": models, "overview": overview, "verification": verification,
             "cost": cost, "system": system,
@@ -2968,6 +3063,38 @@ def _clean_md(text: str) -> str:
     return t
 
 
+def ingest_learning_events(store: Store, cfg: Config) -> dict:
+    """Idempotently read explicit plugin-owned JSONL operation metadata.
+
+    The default source is `<reports_dir>/learning-events.jsonl`; additional files
+    require an explicit allowlist. Missing sources remain `available: false` and
+    are never interpreted as verified zero historical changes.
+    """
+    result = {"sources": [], "ingested": 0, "rejected": 0}
+    for path in dict.fromkeys(str(p.expanduser()) for p in cfg.resolved_learning_event_sources()):
+        source = {"path": path, "available": False}
+        try:
+            with Path(path).open(encoding="utf-8") as fh:
+                source["available"] = True
+                for lineno, line in enumerate(fh, 1):
+                    if not line.strip():
+                        continue
+                    try:
+                        record = json.loads(line)
+                        if not isinstance(record, dict):
+                            raise ValueError("record is not an object")
+                        if store.record_learning_event(record, source_key=f"{path}:{lineno}:{record.get('event_id', '')}"):
+                            result["ingested"] += 1
+                    except (ValueError, TypeError, json.JSONDecodeError):
+                        result["rejected"] += 1
+        except OSError:
+            pass
+        result["sources"].append(source)
+    return result
+
+
+# Deprecated legacy helper. It is retained only for API compatibility and is no
+# longer called by digest/range construction; comments cannot create Lessons.
 def _extract_learned(src: KanbanSource, events: list[Event], tasks: dict | None = None) -> list[dict]:
     """Surface short, cleaned 'learned/erkenntnis'-style notes from comments and
     tie each to its task so the UI can link to the ticket. Markdown is stripped."""
@@ -3064,6 +3191,7 @@ def build_range(cfg: Config, from_date: str, to_date: str, board: str = "all") -
     start = datetime.strptime(from_date, "%Y-%m-%d").replace(tzinfo=z)
     end = datetime.strptime(to_date, "%Y-%m-%d").replace(tzinfo=z)
     store = Store(cfg)
+    learning_ingestion = ingest_learning_events(store, cfg)
     days, cur = [], start
     src = KanbanSource(cfg, None if board in (None, "", "all") else board)
     try:
@@ -3087,6 +3215,9 @@ def build_range(cfg: Config, from_date: str, to_date: str, board: str = "all") -
             days.append(d)
             cur += timedelta(days=1)
         limits = store.get_budget_limits()
+        range_start, _, _ = day_bounds(from_date, cfg.timezone)
+        _, range_end, _ = day_bounds(to_date, cfg.timezone)
+        learning_events = store.learning_events(range_start, range_end)
         cost_sum, cost_approx = insights_cost(range_insights)
         done = [item for d in days for item in d["done"]]
         hand_open = days[-1]["hand"] if days else []
@@ -3106,7 +3237,11 @@ def build_range(cfg: Config, from_date: str, to_date: str, board: str = "all") -
             "done": done, "hand": hand_open,
             "budget_daily": limits["daily_eur"], "budget_monthly": limits["monthly_eur"],
             "num_days": len(days),
-            "learned": learned, "decision_stats": stats, "models": range_models,
+            "learned": learned, "learning_events": learning_events,
+            "learning_ingestion": learning_ingestion,
+            "counters": {"lessons": sum(e["event_type"] == "lesson_recorded" for e in learning_events),
+                         "skill_soul": sum(e["event_type"] != "lesson_recorded" for e in learning_events)},
+            "decision_stats": stats, "models": range_models,
             "human_chat_sessions": range_human_sessions,
             "system": {"insights": range_insights},
             "days": [{"date": d["date"], "cost": d["cost"]["today_eur"],
@@ -3470,6 +3605,28 @@ if router is not None:
             )
         except ValueError as exc:
             raise HTTPException(422, str(exc))
+        finally:
+            store.close()
+
+    @router.post("/learning-events")
+    def record_learning_event(body: dict = Body(default={})):
+        """Ingest a successful structured lifecycle record into Briefing's ledger."""
+        store = Store(load_config())
+        try:
+            inserted = store.record_learning_event(body or {})
+            return {"ok": True, "inserted": inserted}
+        except ValueError as exc:
+            raise HTTPException(422, str(exc))
+        finally:
+            store.close()
+
+    @router.get("/learning-events")
+    def learning_events(from_ts: int, to_ts: int):
+        if to_ts < from_ts:
+            raise HTTPException(422, "to_ts must be >= from_ts")
+        store = Store(load_config())
+        try:
+            return {"events": store.learning_events(from_ts, to_ts)}
         finally:
             store.close()
 
