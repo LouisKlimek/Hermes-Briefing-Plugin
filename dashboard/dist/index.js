@@ -493,14 +493,92 @@
   }
   function HumanChatSessions(props) {
     var sessions = props.sessions || [];
+    var sExpanded = useState({}); var expanded = sExpanded[0], setExpanded = sExpanded[1];
+    var sDetails = useState({}); var details = sDetails[0], setDetails = sDetails[1];
+    var sTitles = useState({}); var titles = sTitles[0], setTitles = sTitles[1];
+    var sHidden = useState({}); var hidden = sHidden[0], setHidden = sHidden[1];
+    var visible = sessions.filter(function (session, i) { return !hidden[session.id || (session.started_at + "::" + i)]; });
+    function requestJSON(url, options) {
+      return fetch(url, options).then(function (r) {
+        return r.json().catch(function () { return {}; }).then(function (data) {
+          if (!r.ok) throw new Error(data.detail || "Session action failed.");
+          return data;
+        });
+      });
+    }
+    function loadDetails(session) {
+      if (!session.id) return;
+      var id = session.id;
+      setDetails(function (old) { return Object.assign({}, old, { [id]: { loading: true } }); });
+      Promise.all([
+        requestJSON("/api/sessions/" + encodeURIComponent(id)),
+        requestJSON("/api/sessions/" + encodeURIComponent(id) + "/messages")
+      ]).then(function (result) {
+        setDetails(function (old) { return Object.assign({}, old, { [id]: { session: result[0], messages: result[1].messages || [] } }); });
+      }).catch(function (err) {
+        setDetails(function (old) { return Object.assign({}, old, { [id]: { error: err && err.message ? err.message : "Could not load native session details." } }); });
+      });
+    }
+    function toggle(session, key) {
+      var next = !expanded[key];
+      setExpanded(function (old) { return Object.assign({}, old, { [key]: next }); });
+      if (next && session.id && !details[session.id]) loadDetails(session);
+    }
+    function rename(session) {
+      if (!session.id) return;
+      var current = titles[session.id] != null ? titles[session.id] : (session.title || "");
+      var next = window.prompt("Rename session", current);
+      if (next === null) return;
+      requestJSON("/api/sessions/" + encodeURIComponent(session.id), {
+        method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ title: next })
+      }).then(function (result) {
+        setTitles(function (old) { return Object.assign({}, old, { [session.id]: result.title || "" }); });
+      }).catch(function (err) { window.alert(err && err.message ? err.message : "Could not rename session."); });
+    }
+    function download(session) {
+      if (!session.id) return;
+      requestJSON("/api/sessions/" + encodeURIComponent(session.id) + "/export").then(function (data) {
+        var blob = new Blob([JSON.stringify(data, null, 2) + "\n"], { type: "application/json" });
+        var link = document.createElement("a"); link.href = URL.createObjectURL(blob);
+        link.download = "hermes-session-" + session.id + ".json";
+        document.body.appendChild(link); link.click(); link.remove(); URL.revokeObjectURL(link.href);
+      }).catch(function (err) { window.alert(err && err.message ? err.message : "Could not export session."); });
+    }
+    function remove(session, key) {
+      if (!session.id || !window.confirm("Delete this Hermes session and its stored messages? This cannot be undone.")) return;
+      requestJSON("/api/sessions/" + encodeURIComponent(session.id), { method: "DELETE" }).then(function () {
+        setHidden(function (old) { return Object.assign({}, old, { [key]: true }); });
+      }).catch(function (err) { window.alert(err && err.message ? err.message : "Could not delete session."); });
+    }
+    function handoff(messages) {
+      return (messages || []).find(function (message) { return /\[CONTEXT COMPACTION|Context handoff/i.test(String(message.content || "")); });
+    }
     return h(Section, { title: "Human Chat Sessions (" + sessions.length + ")" },
-      !sessions.length ? h("div", { style: { fontSize: "0.82rem", color: MUTED } }, "No human chat sessions in this range.")
-        : h("div", { style: { display: "grid", gap: "0.4rem" } }, sessions.map(function (session, i) {
-          return h("div", { key: session.started_at + "::" + i, className: "brf-card", style: {
+      !visible.length ? h("div", { style: { fontSize: "0.82rem", color: MUTED } }, "No human chat sessions in this range.")
+        : h("div", { style: { display: "grid", gap: "0.4rem" } }, visible.map(function (session, i) {
+          var key = session.id || (session.started_at + "::" + i), open = !!expanded[key], detail = details[session.id] || {};
+          var messages = detail.messages || [], contextHandoff = handoff(messages);
+          return h("div", { key: key, className: "brf-card", style: {
               border: "1px solid var(--color-border)", borderRadius: "0.5rem", padding: "0.45rem 0.6rem", background: "var(--color-card)" } },
-            h("div", { style: { fontSize: "0.84rem", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, session.title || "Untitled chat"),
+            h("div", { style: { display: "flex", alignItems: "center", gap: "0.45rem" } },
+              h("button", { type: "button", onClick: function () { toggle(session, key); }, "aria-expanded": open, "aria-label": (open ? "Collapse" : "Expand") + " session details", style: { border: 0, background: "transparent", color: "inherit", cursor: "pointer", padding: "0.1rem", fontSize: "0.8rem" } }, open ? "⌄" : "›"),
+              h("div", { style: { flex: 1, minWidth: 0, fontSize: "0.84rem", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, titles[session.id] != null ? (titles[session.id] || "Untitled chat") : (session.title || "Untitled chat")),
+              session.id ? h("a", { href: "/chat?resume=" + encodeURIComponent(session.id), title: "Resume in Chat", style: { fontSize: "0.72rem", textDecoration: "none", color: "inherit", border: "1px solid var(--color-border)", borderRadius: "0.35rem", padding: "0.13rem 0.35rem" } }, "Resume") : null,
+              session.id ? h("button", { type: "button", onClick: function () { rename(session); }, title: "Rename session", "aria-label": "Rename session", style: { border: 0, background: "transparent", color: "inherit", cursor: "pointer", padding: "0.1rem" } }, "✎") : null,
+              session.id ? h("button", { type: "button", onClick: function () { download(session); }, title: "Export JSON", "aria-label": "Export session as JSON", style: { border: 0, background: "transparent", color: "inherit", cursor: "pointer", padding: "0.1rem" } }, "⇩") : null,
+              session.id ? h("button", { type: "button", onClick: function () { remove(session, key); }, title: "Delete session", "aria-label": "Delete session", style: { border: 0, background: "transparent", color: "#d14a4a", cursor: "pointer", padding: "0.1rem" } }, "🗑") : null),
             h("div", { style: { fontSize: "0.72rem", color: MUTED, marginTop: "0.15rem" } },
-              (Number(session.message_count) || 0) + " messages · " + taskDate(session.started_at) + " · " + (session.model || "Unknown model")));
+              (Number(session.message_count) || 0) + " messages · " + taskDate(session.started_at) + " · " + (session.model || "Unknown model")),
+            open ? h("div", { style: { marginTop: "0.5rem", borderTop: "1px solid var(--color-border)", paddingTop: "0.5rem" } },
+              detail.loading ? h("div", { style: { fontSize: "0.76rem", color: MUTED } }, "Loading native session details…") : null,
+              detail.error ? h("div", { role: "alert", style: { fontSize: "0.76rem", color: "#d14a4a" } }, detail.error) : null,
+              detail.session ? h("div", { style: { fontSize: "0.74rem", color: MUTED, marginBottom: "0.45rem" } }, "Source: " + (detail.session.source || session.source || "unknown") + " · End: " + (detail.session.end_reason || "active")) : null,
+              detail.session ? h("div", { style: { fontSize: "0.78rem", fontWeight: 600, marginBottom: "0.2rem" } }, "Context Handoff") : null,
+              detail.session ? (contextHandoff ? h("pre", { style: { whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: "12rem", overflowY: "auto", margin: "0 0 0.5rem", padding: "0.45rem", borderRadius: "0.35rem", background: "var(--color-secondary, transparent)", fontSize: "0.72rem" } }, String(contextHandoff.content || "")) : h("div", { style: { fontSize: "0.74rem", color: MUTED, marginBottom: "0.5rem" } }, "No context handoff is available for this session.")) : null,
+              detail.session ? h("div", { style: { fontSize: "0.78rem", fontWeight: 600, marginBottom: "0.2rem" } }, "History (" + messages.length + ")") : null,
+              messages.length ? h("div", { style: { display: "grid", gap: "0.35rem", maxHeight: "18rem", overflowY: "auto" } }, messages.map(function (message, messageIndex) {
+                return h("div", { key: message.id || messageIndex, style: { padding: "0.4rem", border: "1px solid var(--color-border)", borderRadius: "0.35rem" } }, h("div", { style: { fontSize: "0.68rem", color: MUTED, marginBottom: "0.15rem" } }, message.role || "message"), h("div", { style: { whiteSpace: "pre-wrap", overflowWrap: "anywhere", fontSize: "0.75rem" } }, String(message.content || "")));
+              })) : (detail.session ? h("div", { style: { fontSize: "0.74rem", color: MUTED } }, "No message history is available for this session.") : null)) : null);
         })));
   }
   function taskStatusBucket(status) {
