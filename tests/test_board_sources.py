@@ -112,10 +112,14 @@ def make_chat_session_db(path: Path, rows: list[tuple]) -> None:
     with sqlite3.connect(path) as conn:
         conn.executescript("""
             CREATE TABLE sessions (
-                title TEXT, message_count INTEGER, started_at INTEGER, model TEXT
+                id TEXT, title TEXT, message_count INTEGER, started_at INTEGER, model TEXT, source TEXT
             );
         """)
-        conn.executemany("INSERT INTO sessions VALUES (?, ?, ?, ?)", rows)
+        conn.executemany(
+            "INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?)",
+            [(f"session-{index}", title, count, started, model, "cli")
+             for index, (title, count, started, model) in enumerate(rows, start=1)],
+        )
 
 
 class BoardSourceTests(unittest.TestCase):
@@ -138,7 +142,8 @@ class BoardSourceTests(unittest.TestCase):
             empty_rows = api.human_chat_sessions(cfg, 202, 300)
 
         self.assertEqual([row["title"] for row in rows], ["", "work kanban task t_abc123 extra", "Normal chat"])
-        self.assertEqual(rows[0], {"title": "", "message_count": 0, "started_at": 200, "model": ""})
+        self.assertEqual(rows[0], {"id": "session-5", "title": "", "message_count": 0,
+                                   "started_at": 200, "model": "", "source": "cli"})
         self.assertEqual(rows[-1]["model"], "gpt-5")
         self.assertEqual(empty_rows, [])
 
@@ -159,6 +164,12 @@ class BoardSourceTests(unittest.TestCase):
         range_view = bundle[bundle.index("function RangeView"):bundle.index("function StatusBar")]
         self.assertIn('function HumanChatSessions', bundle)
         self.assertIn('title: "Human Chat Sessions (" + sessions.length + ")"', bundle)
+        self.assertIn('"/api/sessions/" + encodeURIComponent(id)', bundle)
+        self.assertIn('"/api/sessions/" + encodeURIComponent(session.id) + "/export"', bundle)
+        self.assertIn('href: "/chat?resume=" + encodeURIComponent(session.id)', bundle)
+        self.assertIn('method: "PATCH"', bundle)
+        self.assertIn('method: "DELETE"', bundle)
+        self.assertIn('No context handoff is available for this session.', bundle)
         self.assertIn('h(HumanChatSessions, { sessions: digest.human_chat_sessions })', daily_view)
         self.assertIn('h(HumanChatSessions, { sessions: r.human_chat_sessions })', range_view)
     def test_report_embeds_the_grouped_task_view_without_a_tasks_tab(self):

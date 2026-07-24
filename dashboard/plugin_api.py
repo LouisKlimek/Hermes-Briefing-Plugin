@@ -2703,7 +2703,12 @@ _KANBAN_WORKER_SESSION_TITLE = re.compile(r"^work kanban task t_[0-9a-f]+$", re.
 
 
 def human_chat_sessions(cfg: Config, start_ts: int, end_ts: int) -> list[dict]:
-    """Read direct chats from this profile's state DB for an exact report window."""
+    """Return report-window handles for native Hermes session routes.
+
+    The Briefing UI uses Hermes' own ``/api/sessions`` resources for all
+    session details and mutations. This query only selects current-profile
+    sessions for the report window and retains their stable host IDs.
+    """
     db = cfg.hermes_home / "state.db"
     if not db.exists():
         return []
@@ -2720,13 +2725,14 @@ def human_chat_sessions(cfg: Config, start_ts: int, end_ts: int) -> list[dict]:
             return f'"{name}"' if name in cols else f"NULL AS {name}"
 
         rows = conn.execute(
-            "SELECT " + ", ".join(select(name) for name in ("title", "message_count", "started_at", "model"))
+            "SELECT " + ", ".join(select(name) for name in ("id", "title", "message_count", "started_at", "model", "source"))
             + " FROM sessions WHERE started_at >= ? AND started_at < ? ORDER BY started_at DESC",
             (start_ts, end_ts),
         ).fetchall()
         return [
-            {"title": str(row["title"] or ""), "message_count": int(row["message_count"] or 0),
-             "started_at": int(row["started_at"] or 0), "model": str(row["model"] or "")}
+            {"id": str(row["id"] or ""), "title": str(row["title"] or ""),
+             "message_count": int(row["message_count"] or 0), "started_at": int(row["started_at"] or 0),
+             "model": str(row["model"] or ""), "source": str(row["source"] or "")}
             for row in rows
             if not _KANBAN_WORKER_SESSION_TITLE.fullmatch(str(row["title"] or ""))
         ]
